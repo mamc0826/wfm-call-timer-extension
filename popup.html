@@ -23,21 +23,35 @@
       --text: #f8fafc;
       --muted: #a8b2d1;
       --shadow: rgba(0, 0, 0, 0.4);
+      --cal-red: #ef4444;
+      --cal-red-bg: rgba(239, 68, 68, 0.15);
+      --cal-yellow: #fbbf24;
+      --cal-yellow-bg: rgba(251, 191, 36, 0.15);
+      --cal-green: #22c55e;
+      --cal-green-bg: rgba(34, 197, 94, 0.15);
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      height: 600px;
+    }
     body {
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
       background: var(--bg);
       color: var(--text);
       width: 400px;
-      min-height: 460px;
-      overflow-x: hidden;
+      overflow: hidden;
     }
     .app { 
       position: relative; 
-      min-height: 460px;
+      height: 100%;
       display: flex;
       flex-direction: column;
+      overflow: hidden;
+    }
+    .main-scroll {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      min-height: 0;
     }
     .header {
       display: flex;
@@ -73,7 +87,6 @@
     }
     .icon-btn:hover .tooltip { opacity: 1; }
 
-    /* ===== WORKSHIFT BAR ===== */
     .workshift-bar {
       display: flex;
       align-items: center;
@@ -89,65 +102,29 @@
     .workshift-bar.ended {
       background: linear-gradient(90deg, rgba(239,68,68,0.15), rgba(239,68,68,0.05));
     }
-    .workshift-info {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
+    .workshift-info { display: flex; align-items: center; gap: 8px; }
     .workshift-dot {
       width: 10px; height: 10px; border-radius: 50%;
       background: var(--green-dark);
       box-shadow: 0 0 10px var(--green-dark);
       animation: pulse-dot 2s infinite;
     }
-    .workshift-bar.inactive .workshift-dot {
-      background: var(--muted);
-      box-shadow: none;
-      animation: none;
-    }
-    .workshift-bar.ended .workshift-dot {
-      background: var(--red);
-      box-shadow: 0 0 10px var(--red);
-      animation: none;
-    }
-    @keyframes pulse-dot {
-      0%, 100% { transform: scale(1); opacity: 1; }
-      50% { transform: scale(1.2); opacity: 0.7; }
-    }
-    .workshift-text {
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--green);
-      letter-spacing: 0.5px;
-    }
+    .workshift-bar.inactive .workshift-dot { background: var(--muted); box-shadow: none; animation: none; }
+    .workshift-bar.ended .workshift-dot { background: var(--red); box-shadow: 0 0 10px var(--red); animation: none; }
+    @keyframes pulse-dot { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.2); opacity: 0.7; } }
+    .workshift-text { font-size: 12px; font-weight: 700; color: var(--green); letter-spacing: 0.5px; }
     .workshift-bar.inactive .workshift-text { color: var(--muted); }
     .workshift-bar.ended .workshift-text { color: var(--red); }
-    .workshift-sub {
-      font-size: 10px;
-      color: var(--muted);
-      margin-top: 2px;
-    }
+    .workshift-sub { font-size: 10px; color: var(--muted); margin-top: 2px; }
     .btn-workshift {
-      border: none; border-radius: 8px;
-      padding: 8px 16px;
-      font-size: 12px; font-weight: 700;
-      cursor: pointer; transition: all 0.2s ease;
+      border: none; border-radius: 8px; padding: 8px 16px;
+      font-size: 12px; font-weight: 700; cursor: pointer; transition: all 0.2s ease;
     }
     .btn-workshift:hover { transform: scale(1.05); }
     .btn-workshift:active { transform: scale(0.95); }
-    .btn-begin {
-      background: var(--green-dark);
-      color: #fff;
-      box-shadow: 0 0 12px rgba(34,197,94,0.3);
-    }
-    .btn-begin:hover {
-      background: var(--green-hover);
-      box-shadow: 0 0 16px rgba(34,197,94,0.5);
-    }
-    .btn-end {
-      background: var(--red);
-      color: #fff;
-    }
+    .btn-begin { background: var(--green-dark); color: #fff; box-shadow: 0 0 12px rgba(34,197,94,0.3); }
+    .btn-begin:hover { background: var(--green-hover); box-shadow: 0 0 16px rgba(34,197,94,0.5); }
+    .btn-end { background: var(--red); color: #fff; }
     .btn-end:hover { background: var(--red-hover); }
 
     .timezone-bar {
@@ -166,16 +143,25 @@
       padding: 8px 16px; font-size: 11px; color: var(--muted);
       border-bottom: 1px solid var(--border);
       background: rgba(10, 25, 47, 0.5);
+      flex-wrap: wrap; gap: 6px;
     }
-    .schedule-info { display: flex; align-items: center; gap: 6px; }
+    .schedule-info { display: flex; align-items: center; gap: 6px; flex: 1; }
     .schedule-dot { width: 6px; height: 6px; border-radius: 50%; }
     .ot-btn {
       background: var(--amber); color: var(--bg); border: none;
       padding: 3px 10px; border-radius: 4px; font-size: 10px;
       font-weight: 700; cursor: pointer; transition: all 0.2s;
+      flex-shrink: 0;
     }
     .ot-btn:hover { background: var(--amber-hover); transform: scale(1.05); }
     .ot-btn:active { transform: scale(0.95); }
+    .today-sched-btn {
+      background: var(--surface); color: var(--accent); border: 1px solid var(--border);
+      padding: 3px 10px; border-radius: 4px; font-size: 10px;
+      font-weight: 700; cursor: pointer; transition: all 0.2s;
+      flex-shrink: 0;
+    }
+    .today-sched-btn:hover { background: var(--border); border-color: var(--accent); }
     .status-row {
       display: flex; align-items: center; justify-content: center;
       gap: 8px; padding: 12px 0 6px;
@@ -280,7 +266,7 @@
     }
     .modal-close:hover { background: rgba(255,255,255,0.1); color: var(--text); }
 
-    /* ===== CALENDAR / HISTORY MODAL (NEW) ===== */
+    /* ===== CALENDAR ===== */
     .calendar-nav {
       display: flex; align-items: center; justify-content: space-between;
       margin-bottom: 16px; padding: 0 4px;
@@ -292,9 +278,7 @@
       transition: all 0.2s;
     }
     .cal-nav-btn:hover { background: var(--border); }
-    .cal-month-year {
-      font-size: 16px; font-weight: 700; color: var(--text);
-    }
+    .cal-month-year { font-size: 16px; font-weight: 700; color: var(--text); }
     .calendar-grid {
       display: grid;
       grid-template-columns: repeat(7, 1fr);
@@ -303,8 +287,7 @@
     }
     .cal-day-header {
       text-align: center; font-size: 10px; color: var(--muted);
-      font-weight: 700; text-transform: uppercase;
-      padding: 6px 0;
+      font-weight: 700; text-transform: uppercase; padding: 6px 0;
     }
     .cal-day {
       aspect-ratio: 1;
@@ -325,19 +308,72 @@
     .cal-day.selected .cal-day-num { color: var(--bg); font-weight: 700; }
     .cal-day.selected .cal-day-earnings { color: var(--bg); }
     .cal-day.other-month { opacity: 0.4; }
+
+    .cal-day.cal-day-red { background: var(--cal-red-bg); border-color: var(--cal-red); }
+    .cal-day.cal-day-red .cal-day-num { color: var(--cal-red); }
+    .cal-day.cal-day-yellow { background: var(--cal-yellow-bg); border-color: var(--cal-yellow); }
+    .cal-day.cal-day-yellow .cal-day-num { color: var(--cal-yellow); }
+    .cal-day.cal-day-green { background: var(--cal-green-bg); border-color: var(--cal-green); }
+    .cal-day.cal-day-green .cal-day-num { color: var(--cal-green); }
+
     .cal-day-num { font-size: 13px; font-weight: 600; color: var(--text); }
-    .cal-day-earnings {
-      font-size: 9px; color: var(--green); font-weight: 700;
-      margin-top: 2px;
-    }
-    .cal-day-calls {
-      font-size: 8px; color: var(--muted);
-    }
+    .cal-day-earnings { font-size: 9px; color: var(--green); font-weight: 700; margin-top: 2px; }
+    .cal-day-calls { font-size: 8px; color: var(--muted); }
     .cal-day-dot {
       width: 4px; height: 4px; border-radius: 50%;
       background: var(--green); position: absolute;
       top: 4px; right: 4px;
     }
+
+    .calendar-legend {
+      display: flex; justify-content: center; gap: 16px;
+      margin-bottom: 12px; font-size: 10px;
+    }
+    .legend-item { display: flex; align-items: center; gap: 4px; color: var(--muted); }
+    .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+    .legend-dot.red { background: var(--cal-red); }
+    .legend-dot.yellow { background: var(--cal-yellow); }
+    .legend-dot.green { background: var(--cal-green); }
+
+    .month-totals-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-top: 16px;
+      display: none;
+    }
+    .month-totals-header {
+      font-size: 12px; font-weight: 700; color: var(--accent);
+      text-transform: uppercase; letter-spacing: 0.5px;
+      margin-bottom: 12px; text-align: center;
+      border-bottom: 1px solid var(--border); padding-bottom: 8px;
+    }
+    .month-totals-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    .month-total-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 8px;
+      text-align: center;
+    }
+    .month-total-label {
+      font-size: 10px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .month-total-value {
+      font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums;
+    }
+    .month-total-usd { color: var(--green); }
+    .month-total-mxn { color: var(--accent); }
+    .month-total-calls { color: var(--text); }
+    .month-total-dur { color: var(--amber); }
+
     .day-detail-panel {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -347,11 +383,16 @@
     }
     .day-detail-header {
       display: flex; justify-content: space-between; align-items: center;
-      margin-bottom: 12px;
+      margin-bottom: 12px; flex-wrap: wrap; gap: 8px;
     }
-    .day-detail-title {
-      font-size: 14px; font-weight: 700; color: var(--text);
+    .day-detail-title { font-size: 14px; font-weight: 700; color: var(--text); }
+    .day-hours-badge {
+      font-size: 10px; font-weight: 700; padding: 4px 10px;
+      border-radius: 12px; display: none;
     }
+    .day-hours-red { background: var(--cal-red-bg); color: var(--cal-red); border: 1px solid var(--cal-red); }
+    .day-hours-yellow { background: var(--cal-yellow-bg); color: var(--cal-yellow); border: 1px solid var(--cal-yellow); }
+    .day-hours-green { background: var(--cal-green-bg); color: var(--cal-green); border: 1px solid var(--cal-green); }
     .day-detail-stats {
       display: flex; gap: 16px; margin-bottom: 12px;
     }
@@ -365,10 +406,7 @@
     }
     .day-stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; }
     .day-stat-value { font-size: 16px; font-weight: 700; color: var(--green); }
-    .day-calls-list {
-      max-height: 200px;
-      overflow-y: auto;
-    }
+    .day-calls-list { max-height: 200px; overflow-y: auto; }
     .day-call-item {
       display: flex; justify-content: space-between;
       align-items: center;
@@ -380,9 +418,7 @@
     .day-call-time { color: var(--muted); font-family: monospace; }
     .day-call-dur { color: var(--text); font-weight: 600; }
     .day-call-val { color: var(--green); font-weight: 700; }
-    .day-call-actions {
-      display: flex; gap: 4px;
-    }
+    .day-call-actions { display: flex; gap: 4px; }
     .call-action-btn {
       background: none; border: none;
       color: var(--muted); cursor: pointer;
@@ -391,92 +427,124 @@
     }
     .call-action-btn:hover { background: rgba(255,255,255,0.1); color: var(--text); }
     .call-action-btn.delete:hover { color: var(--red); }
-    .add-call-form {
-      display: flex; gap: 8px; align-items: center;
-      margin-top: 12px; padding-top: 12px;
-      border-top: 1px solid var(--border);
-    }
     .add-call-section {
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px solid var(--border);
+      margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
     }
-    .add-call-label {
-      font-size: 11px;
-      color: var(--muted);
-      margin-bottom: 8px;
-    }
+    .add-call-label { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
     .time-input-row {
-      display: flex;
-      align-items: flex-end;
-      gap: 6px;
-      flex-wrap: nowrap;
-      justify-content: center;
+      display: flex; align-items: flex-end; gap: 6px;
+      flex-wrap: nowrap; justify-content: center;
     }
     .time-input-group {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 4px;
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
     }
     .time-label {
-      font-size: 9px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      font-size: 9px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.5px;
     }
-    .time-control {
-      display: flex;
-      align-items: center;
-      gap: 2px;
-    }
+    .time-control { display: flex; align-items: center; gap: 2px; }
     .time-control input {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 5px 2px;
-      border-radius: 6px;
-      font-size: 12px;
-      font-weight: 600;
-      width: 48px;
-      text-align: center;
-      font-family: 'Consolas', monospace;
-      cursor: default;
-      flex-shrink: 0;
+      background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); padding: 5px 2px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; width: 48px;
+      text-align: center; font-family: 'Consolas', monospace;
+      cursor: default; flex-shrink: 0;
     }
     .time-btn {
-      background: var(--surface);
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); width: 22px; height: 26px;
+      border-radius: 6px; font-size: 13px; font-weight: 700;
+      cursor: pointer; display: flex; align-items: center;
+      justify-content: center; transition: all 0.15s ease;
+      user-select: none; flex-shrink: 0; padding: 0;
+    }
+    .time-btn:hover { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+    .time-btn:active { transform: scale(0.9); }
+    .time-separator { color: var(--muted); font-size: 14px; font-weight: 700; padding-bottom: 6px; }
+    .add-call-btn { flex-shrink: 0; margin-left: 4px; padding: 8px 14px; white-space: nowrap; }
+
+    /* ===== TODAY SCHEDULE MODAL ===== */
+    .today-blocks-container { margin-bottom: 16px; }
+    .today-block-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 10px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 10px;
+      margin-bottom: 8px;
+    }
+    .today-block-time { display: flex; align-items: center; gap: 8px; flex: 1; }
+    .today-block-row input {
+      background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); padding: 6px 4px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; width: 52px;
+      text-align: center; font-family: 'Consolas', monospace;
+    }
+    .today-block-row input:focus { border-color: var(--accent); outline: none; }
+    .today-block-remove {
+      background: var(--red); color: #fff; border: none;
+      width: 24px; height: 24px; border-radius: 6px;
+      font-size: 16px; font-weight: 700; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s; flex-shrink: 0;
+    }
+    .today-block-remove:hover { background: var(--red-hover); transform: scale(1.1); }
+    .today-empty-hint {
+      text-align: center; color: var(--muted); font-size: 12px;
+      padding: 20px; font-style: italic;
+    }
+    .today-schedule-actions {
+      display: flex; gap: 8px; margin-bottom: 16px;
+    }
+    .recurring-checkbox-row {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: var(--muted);
+      margin-bottom: 16px; padding: 10px;
+      background: var(--surface); border-radius: 8px;
       border: 1px solid var(--border);
-      color: var(--text);
-      width: 22px;
-      height: 26px;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 700;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.15s ease;
-      user-select: none;
-      flex-shrink: 0;
-      padding: 0;
     }
-    .time-btn:hover {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: var(--bg);
+    .recurring-checkbox-row input[type="checkbox"] {
+      width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer;
     }
-    .time-btn:active {
-      transform: scale(0.9);
+    .recurring-checkbox-row label { cursor: pointer; }
+
+    /* ===== DAY BLOCK EDITOR MODAL ===== */
+    .day-block-editor-container { margin-bottom: 16px; }
+    .day-block-editor-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 8px;
+      margin-bottom: 6px;
     }
-    .time-separator {
-      color: var(--muted);
-      font-size: 14px;
-      font-weight: 700;
-      padding-bottom: 6px;
+    .day-block-editor-row input {
+      background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); padding: 5px 4px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; width: 52px;
+      text-align: center; font-family: 'Consolas', monospace;
     }
-    .add-call-form label { font-size: 11px; color: var(--muted); }
+    .day-block-editor-row input:focus { border-color: var(--accent); outline: none; }
+    .block-editor-remove {
+      background: var(--red); color: #fff; border: none;
+      width: 22px; height: 22px; border-radius: 5px;
+      font-size: 14px; font-weight: 700; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s; flex-shrink: 0; margin-left: auto;
+    }
+    .block-editor-remove:hover { background: var(--red-hover); }
+    .block-chip {
+      display: inline-block; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 2px 6px; font-size: 10px; color: var(--accent);
+      font-weight: 600; margin-right: 4px;
+    }
+    .block-chip.empty { color: var(--muted); border-style: dashed; }
+    .btn-edit-blocks {
+      background: transparent; border: 1px solid var(--border);
+      color: var(--accent); padding: 2px 6px; border-radius: 4px;
+      font-size: 11px; cursor: pointer; transition: all 0.2s;
+    }
+    .btn-edit-blocks:hover { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+    .multi-block-row { align-items: flex-start; padding: 6px 0; }
+    .multi-block-row label { padding-top: 4px; }
+    .sched-blocks { flex: 1; display: flex; flex-wrap: wrap; gap: 4px; padding-top: 2px; }
 
     /* ===== SETTINGS ===== */
     .settings-section { 
@@ -588,12 +656,6 @@
     .toast.success { border-color: var(--green); }
     .toast.error { border-color: var(--red); }
     .toast.info { border-color: var(--accent); }
-    .add-call-btn {
-      flex-shrink: 0;
-      margin-left: 4px;
-      padding: 8px 14px;
-      white-space: nowrap;
-    }
   </style>
 </head>
 <body>
@@ -623,6 +685,7 @@
       </div>
     </header>
 
+    <div class="main-scroll">
     <!-- WORKSHIFT BAR -->
     <div class="workshift-bar inactive" id="workshiftBar">
       <div class="workshift-info">
@@ -654,6 +717,7 @@
         <span id="scheduleText">Loading...</span>
       </div>
       <button id="btnOT" class="ot-btn" style="display:none;">Enable OT</button>
+      <button id="todayScheduleBtn" class="today-sched-btn" style="display:none;">📝 Today</button>
     </div>
 
     <div class="status-row">
@@ -693,13 +757,14 @@
       <button id="btnEndShift" class="btn btn-red btn-full">🚪 End Shift for Day</button>
       <button id="btnResumeShift" class="btn btn-green btn-full" style="display:none;">🔄 Resume Shift (OT)</button>
     </div>
+    </div>
 
     <div class="stats-bar" id="statsBar">
       <span>Total: 0:00:00</span> | <span>Calls: 0</span> | <span>Avg: —</span>
     </div>
   </div>
 
-  <!-- HISTORY / CALENDAR MODAL (NEW) -->
+  <!-- HISTORY / CALENDAR MODAL -->
   <div class="modal-overlay" id="historyModal">
     <div class="modal-content">
       <div class="modal-header">
@@ -708,15 +773,51 @@
       </div>
       <div class="calendar-nav">
         <button class="cal-nav-btn" id="calPrevMonth">◀ Prev</button>
-        <span class="cal-month-year" id="calMonthYear">June 2026</span>
+        <span class="cal-month-year" id="calMonthYear">July 2026</span>
         <button class="cal-nav-btn" id="calNextMonth">Next ▶</button>
       </div>
-      <div class="calendar-grid" id="calendarGrid">
-        <!-- Calendar injected by JS -->
+
+      <!-- Calendar Legend -->
+      <div class="calendar-legend">
+        <div class="legend-item">
+          <span class="legend-dot red"></span> Light (&lt;3 hrs)
+        </div>
+        <div class="legend-item">
+          <span class="legend-dot yellow"></span> Moderate (3–5 hrs)
+        </div>
+        <div class="legend-item">
+          <span class="legend-dot green"></span> Heavy (5+ hrs)
+        </div>
       </div>
+
+      <div class="calendar-grid" id="calendarGrid"></div>
+
+      <div class="month-totals-panel" id="monthTotalsPanel">
+        <div class="month-totals-header">📅 Month Summary</div>
+        <div class="month-totals-grid">
+          <div class="month-total-card">
+            <div class="month-total-label">Total USD</div>
+            <div class="month-total-value month-total-usd" id="monthTotalUSD">$0.00</div>
+          </div>
+          <div class="month-total-card">
+            <div class="month-total-label">Total MXN</div>
+            <div class="month-total-value month-total-mxn" id="monthTotalMXN">$0.00</div>
+          </div>
+          <div class="month-total-card">
+            <div class="month-total-label">Total Calls</div>
+            <div class="month-total-value month-total-calls" id="monthTotalCalls">0</div>
+          </div>
+          <div class="month-total-card">
+            <div class="month-total-label">Total Duration</div>
+            <div class="month-total-value month-total-dur" id="monthTotalDuration">0:00</div>
+          </div>
+        </div>
+      </div>
+
       <div class="day-detail-panel" id="dayDetailPanel" style="display:none;">
         <div class="day-detail-header">
-          <span class="day-detail-title" id="dayDetailTitle">June 15, 2026</span>
+          <span class="day-detail-title" id="dayDetailTitle">July 16, 2026</span>
+          <span class="day-hours-badge" id="dayHoursBadge">0.0 hrs</span>
           <span style="font-size:11px;color:var(--muted);" id="dayDetailTotal"></span>
         </div>
         <div class="day-detail-stats">
@@ -764,6 +865,61 @@
     </div>
   </div>
 
+  <!-- TODAY SCHEDULE MODAL (NEW) -->
+  <div class="modal-overlay" id="todayScheduleModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>📝 Today's Schedule</h3>
+        <button class="modal-close" data-modal="todayScheduleModal">×</button>
+      </div>
+      <p class="settings-desc" style="margin-bottom:12px;">
+        Set your work blocks for today. Auto-detection will only be active during these times. 
+        Perfect for overtime days or custom schedules.
+      </p>
+
+      <div class="today-blocks-container" id="todayBlocksContainer">
+        <!-- Blocks injected by JS -->
+      </div>
+
+      <div class="today-schedule-actions">
+        <button class="btn btn-small btn-blue" id="btnAddTodayBlock">➕ Add Block</button>
+      </div>
+
+      <div class="recurring-checkbox-row">
+        <input type="checkbox" id="applyToRecurring">
+        <label for="applyToRecurring">Also save this as my recurring schedule for this day of the week</label>
+      </div>
+
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-green btn-full" id="btnSaveTodaySchedule">💾 Save Today's Schedule</button>
+        <button class="btn btn-red btn-full" id="btnClearTodayOverride" style="margin-top:8px;">🗑 Clear Override</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DAY BLOCK EDITOR MODAL (NEW) -->
+  <div class="modal-overlay" id="dayBlockEditorModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="dayBlockEditorTitle">Edit Work Blocks</h3>
+        <button class="modal-close" data-modal="dayBlockEditorModal">×</button>
+      </div>
+      <p class="settings-desc" style="margin-bottom:12px;">
+        Add multiple work blocks with breaks in between. Example: 08:00→10:00, 12:00→14:00, 16:00→19:00
+      </p>
+
+      <div class="day-block-editor-container" id="dayBlockEditorContainer">
+        <!-- Blocks injected by JS -->
+      </div>
+
+      <div style="display:flex;gap:8px;margin-bottom:16px;">
+        <button class="btn btn-small btn-blue" id="btnAddDayBlock">➕ Add Block</button>
+      </div>
+
+      <button class="btn btn-green btn-full" id="btnSaveDayBlocks">💾 Save Blocks</button>
+    </div>
+  </div>
+
   <!-- EARNINGS MODAL -->
   <div class="modal-overlay" id="earningsModal">
     <div class="modal-content">
@@ -803,12 +959,15 @@
         <h3>📅 Weekly Schedule</h3>
         <button class="modal-close" data-modal="scheduleModal">×</button>
       </div>
+      <p class="settings-desc" style="margin-bottom:12px;">
+        Click ✎ to edit work blocks for each day. Add multiple blocks with breaks between them.
+      </p>
       <div id="scheduleTable"></div>
       <div style="margin:14px 0 10px; font-size:12px; display:flex; align-items:center; gap:8px;">
         <label>💰 Pay Rate (USD/min):</label>
         <input type="number" id="rateInput" value="0.14" step="0.01" min="0.01" style="width:70px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;text-align:center;font-size:13px;">
       </div>
-      <button class="btn btn-blue btn-full" id="btnSaveSchedule">💾 Save Schedule</button>
+      <button class="btn btn-blue btn-full" id="btnSaveSchedule">💾 Save Pay Rate</button>
     </div>
   </div>
 
@@ -865,8 +1024,8 @@
         <p class="settings-desc">Choose which currency to display on the main screen, calendar, and call history.</p>
       </div>
       <div class="settings-section">
-        <h4>📅 Weekly Schedule</h4>
-        <p class="settings-desc">Check days you work and set shift hours (HH:MM format).</p>
+        <h4>📅 Weekly Schedule Overview</h4>
+        <p class="settings-desc">View your current schedule. Edit via the Schedule button in the main screen.</p>
         <div id="settingsSchedule"></div>
       </div>
       <button class="btn btn-blue btn-full" id="btnSaveSettings">💾 Save All Settings</button>
@@ -879,4 +1038,5 @@
   <script src="popup.js"></script>
 </body>
 </html>
+
 

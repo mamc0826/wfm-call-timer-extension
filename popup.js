@@ -1,6 +1,6 @@
 // ============================================================
-// WFM CALL TIMER - POPUP SCRIPT (v2.5)
-// Features: Workshift gating, Calendar history, Call editing, Currency preference
+// WFM CALL TIMER - POPUP SCRIPT (v2.6)
+// Features: Multi-block daily schedules, today override, calendar color coding
 // ============================================================
 
 // ===== STATE =====
@@ -124,13 +124,47 @@ function curDur(state) {
   return Math.floor((Date.now()-state.callStartMono)/1000);
 }
 
-function isWithinHours(entry) {
-  if (!entry || !entry.work) return false;
+function timeToMinutes(timeStr) {
+  var p = timeStr.split(":").map(Number);
+  return p[0]*60 + p[1];
+}
+
+function isWithinBlocks(blocks) {
+  if (!blocks || blocks.length === 0) return false;
   var now = new Date();
-  var p = entry.start.split(":").map(Number);
-  var q = entry.end.split(":").map(Number);
   var nowMin = now.getHours()*60 + now.getMinutes();
-  return (p[0]*60+p[1]) <= nowMin && nowMin <= (q[0]*60+q[1]);
+  for (var i = 0; i < blocks.length; i++) {
+    var startMin = timeToMinutes(blocks[i].start);
+    var endMin = timeToMinutes(blocks[i].end);
+    if (startMin <= nowMin && nowMin <= endMin) return true;
+  }
+  return false;
+}
+
+function isTodayActive(state) {
+  if (!state) return false;
+  // Check today override first
+  if (state.todayOverride && state.todayOverride.blocks && state.todayOverride.blocks.length > 0) {
+    return isWithinBlocks(state.todayOverride.blocks);
+  }
+  var entry = state.schedule[getDayKey()];
+  if (!entry) return false;
+  if (state.otToday) return true;
+  if (state.shiftEnded) return false;
+  return entry.work && isWithinBlocks(entry.blocks);
+}
+
+function getDayKey() {
+  return String(new Date().getDay());
+}
+
+function getBlockDurationHours(blocks) {
+  if (!blocks || blocks.length === 0) return 0;
+  var total = 0;
+  for (var i = 0; i < blocks.length; i++) {
+    total += (timeToMinutes(blocks[i].end) - timeToMinutes(blocks[i].start));
+  }
+  return total / 60;
 }
 
 // ===== UI UPDATE =====
@@ -258,12 +292,14 @@ function updateUI(state) {
     }
   }
 
+  // Schedule bar - now supports multi-block display
   var dayKey = String(new Date().getDay());
   var dayData = state.schedule[dayKey];
   var dayName = DAY_NAMES[parseInt(dayKey)];
   var elSched = document.getElementById("scheduleText");
   var elSchedDot = document.getElementById("schedDot");
   var elOT = document.getElementById("btnOT");
+  var elTodaySched = document.getElementById("todayScheduleBtn");
 
   if (elSched && elOT) {
     if (state.shiftEnded) {
@@ -271,11 +307,22 @@ function updateUI(state) {
       elSched.style.color = "#ef4444";
       if (elSchedDot) elSchedDot.style.background = "#ef4444";
       elOT.style.display = "none";
-    } else if (dayData && dayData.work && isWithinHours(dayData)) {
-      elSched.textContent = dayName + " On Duty: " + dayData.start + " – " + dayData.end;
+      if (elTodaySched) elTodaySched.style.display = "none";
+    } else if (state.todayOverride && state.todayOverride.blocks && state.todayOverride.blocks.length > 0) {
+      // Today override active
+      var overrideText = state.todayOverride.blocks.map(function(b) { return b.start + "–" + b.end; }).join(", ");
+      elSched.textContent = dayName + " Custom: " + overrideText;
+      elSched.style.color = "var(--accent)";
+      if (elSchedDot) elSchedDot.style.background = "var(--accent)";
+      elOT.style.display = "none";
+      if (elTodaySched) elTodaySched.style.display = "inline-block";
+    } else if (dayData && dayData.work && isWithinBlocks(dayData.blocks)) {
+      var schedText = dayData.blocks.map(function(b) { return b.start + "–" + b.end; }).join(", ");
+      elSched.textContent = dayName + " On Duty: " + schedText;
       elSched.style.color = "var(--green)";
       if (elSchedDot) elSchedDot.style.background = "var(--green)";
       elOT.style.display = "none";
+      if (elTodaySched) elTodaySched.style.display = "inline-block";
     } else {
       if (state.otToday) {
         elSched.textContent = dayName + " — OT Mode Active";
@@ -290,6 +337,7 @@ function updateUI(state) {
         elOT.textContent = "Enable OT";
       }
       elOT.style.display = "inline-block";
+      if (elTodaySched) elTodaySched.style.display = "inline-block";
     }
   }
 
@@ -367,6 +415,7 @@ function openModal(id) {
     if (id === 'scheduleModal') renderSchedule();
     if (id === 'settingsModal') renderSettings();
     if (id === 'historyModal') renderCalendar();
+    if (id === 'todayScheduleModal') renderTodaySchedule();
 
     m.classList.add('active');
     document.body.style.overflow = 'hidden';
@@ -389,12 +438,70 @@ function closeModal(id) {
 }
 
 function closeAllModals() {
-  ['earningsModal', 'scheduleModal', 'settingsModal', 'historyModal'].forEach(function(id) {
+  ['earningsModal', 'scheduleModal', 'settingsModal', 'historyModal', 'todayScheduleModal'].forEach(function(id) {
     closeModal(id);
   });
 }
 
-// ===== CALENDAR / HISTORY (NEW) =====
+// ===== CALENDAR COLOR CODING =====
+function getDayHoursColor(hours) {
+  // Red: < 3 hours (light work)
+  // Yellow: 3-5 hours (moderate)
+  // Green: >= 5 hours (heavy)
+  if (hours >= 5) return 'green';
+  if (hours >= 3) return 'yellow';
+  return 'red';
+}
+
+function getDayHoursWorked(state, dateKey) {
+  // Get hours from history or today's data
+  var hours = 0;
+  if (state.history && state.history[dateKey]) {
+    hours = state.history[dateKey].totalDuration / 3600;
+  }
+  // Check if it's today
+  if (dateKey === state.todayDate) {
+    var todayHours = totalDur(state) / 3600;
+    if (todayHours > hours) hours = todayHours;
+  }
+  return hours;
+}
+
+// ===== CALENDAR / HISTORY =====
+function calculateMonthTotals(year, month) {
+  if (!currentState || !currentState.history) return { totalUSD: 0, totalMXN: 0, totalCalls: 0, totalDuration: 0 };
+
+  var daysInMonth = new Date(year, month + 1, 0).getDate();
+  var totalUSD = 0;
+  var totalDuration = 0;
+  var totalCalls = 0;
+
+  for (var d = 1; d <= daysInMonth; d++) {
+    var dk = year + '-' + pad2(month+1) + '-' + pad2(d);
+    if (currentState.history[dk]) {
+      totalUSD += currentState.history[dk].totalEarnings;
+      totalDuration += currentState.history[dk].totalDuration;
+      totalCalls += currentState.history[dk].callCount;
+    }
+  }
+
+  // Also include today's data if we're viewing the current month
+  var today = new Date();
+  var todayKey = getDateKey(today);
+  if (today.getFullYear() === year && today.getMonth() === month && currentState.todayDate === todayKey) {
+    var todayUSD = (totalDur(currentState)/60) * currentState.staticMinRate;
+    var todayDur = totalDur(currentState);
+    var todayCalls = currentState.calls.length;
+    totalUSD += todayUSD;
+    totalDuration += todayDur;
+    totalCalls += todayCalls;
+  }
+
+  var totalMXN = totalUSD * (currentState.exchangeRate || 17.50);
+
+  return { totalUSD: totalUSD, totalMXN: totalMXN, totalCalls: totalCalls, totalDuration: totalDuration };
+}
+
 function renderCalendar() {
   var grid = document.getElementById("calendarGrid");
   var monthYear = document.getElementById("calMonthYear");
@@ -443,6 +550,28 @@ function renderCalendar() {
     var div = createCalDay(year, month + 1, j, true);
     grid.appendChild(div);
   }
+
+  // Render month totals at bottom
+  renderMonthTotals(year, month);
+}
+
+function renderMonthTotals(year, month) {
+  var totalsPanel = document.getElementById("monthTotalsPanel");
+  var totalUSD = document.getElementById("monthTotalUSD");
+  var totalMXN = document.getElementById("monthTotalMXN");
+  var totalCalls = document.getElementById("monthTotalCalls");
+  var totalDur = document.getElementById("monthTotalDuration");
+
+  if (!totalsPanel) return;
+
+  totalsPanel.style.display = "block";
+
+  var totals = calculateMonthTotals(year, month);
+
+  if (totalUSD) totalUSD.textContent = fmtCurrency(totals.totalUSD) + " USD";
+  if (totalMXN) totalMXN.textContent = fmtCurrency(totals.totalMXN) + " MXN";
+  if (totalCalls) totalCalls.textContent = totals.totalCalls;
+  if (totalDur) totalDur.textContent = fmtShortTime(totals.totalDuration);
 }
 
 function createCalDay(year, month, day, isOtherMonth) {
@@ -457,12 +586,26 @@ function createCalDay(year, month, day, isOtherMonth) {
   num.textContent = day;
   div.appendChild(num);
 
+  // Color coding based on hours worked
+  var hoursWorked = 0;
+  var hasData = false;
+
+  if (currentState) {
+    hoursWorked = getDayHoursWorked(currentState, dk);
+    if (hoursWorked > 0) hasData = true;
+  }
+
+  // Apply color coding class
+  if (hasData && !isOtherMonth) {
+    var colorCode = getDayHoursColor(hoursWorked);
+    div.classList.add('cal-day-' + colorCode);
+  }
+
   // Check for history data
   if (currentState && currentState.history && currentState.history[dk]) {
     var hd = currentState.history[dk];
     var earnings = document.createElement("span");
     earnings.className = "cal-day-earnings";
-    // Show earnings based on currency preference
     earnings.textContent = fmtEarningsShort(hd.totalEarnings, currentState.exchangeRate);
     div.appendChild(earnings);
 
@@ -507,6 +650,7 @@ async function loadDayDetail(dateKey) {
   var statDur = document.getElementById("dayStatDuration");
   var statEarn = document.getElementById("dayStatEarnings");
   var list = document.getElementById("dayCallsList");
+  var hoursBadge = document.getElementById("dayHoursBadge");
 
   if (!panel) return;
   panel.style.display = "block";
@@ -518,6 +662,21 @@ async function loadDayDetail(dateKey) {
   try {
     var resp = await sendMsg({type: "GET_HISTORY", dateKey: dateKey});
     var dayData = resp.dayData;
+
+    // Show hours badge
+    if (hoursBadge) {
+      var hours = 0;
+      if (dayData) hours = dayData.totalDuration / 3600;
+      if (dateKey === currentState.todayDate) {
+        var todayHours = totalDur(currentState) / 3600;
+        if (todayHours > hours) hours = todayHours;
+      }
+      var colorCode = getDayHoursColor(hours);
+      var colorLabel = colorCode === 'green' ? 'Heavy Day' : (colorCode === 'yellow' ? 'Moderate' : 'Light Day');
+      hoursBadge.className = 'day-hours-badge day-hours-' + colorCode;
+      hoursBadge.textContent = hours.toFixed(1) + ' hrs — ' + colorLabel;
+      hoursBadge.style.display = hours > 0 ? 'inline-block' : 'none';
+    }
 
     if (!dayData || dayData.callCount === 0) {
       statCalls.textContent = "0";
@@ -568,8 +727,6 @@ async function loadDayDetail(dateKey) {
   }
 }
 
-
-
 async function refreshDayEarnings(dateKey) {
   var statEarn = document.getElementById("dayStatEarnings");
   var total = document.getElementById("dayDetailTotal");
@@ -582,6 +739,7 @@ async function refreshDayEarnings(dateKey) {
       statEarn.textContent = fmtEarningsShort(dayData.totalEarnings, currentState.exchangeRate);
       if (total) total.textContent = fmtEarnings(dayData.totalEarnings, currentState.exchangeRate) + " total";
       showToast("Earnings refreshed!", "success");
+      renderMonthTotals(calendarDate.getFullYear(), calendarDate.getMonth());
     }
   } catch (e) {
     showToast("Failed to refresh earnings", "error");
@@ -597,7 +755,6 @@ async function deleteCall(dateKey, callIndex) {
       loadDayDetail(dateKey);
       renderCalendar();
       await refreshState();
-      // Refresh earnings modal if open
       var earnModal = document.getElementById("earningsModal");
       if (earnModal && earnModal.classList.contains("active")) {
         renderEarnings();
@@ -632,7 +789,6 @@ async function addCall(dateKey, startTime, endTime) {
       loadDayDetail(dateKey);
       renderCalendar();
       await refreshState();
-      // Refresh earnings modal if open
       var earnModal = document.getElementById("earningsModal");
       if (earnModal && earnModal.classList.contains("active")) {
         renderEarnings();
@@ -650,6 +806,154 @@ function changeMonth(delta) {
   selectedDateKey = null;
 }
 
+// ===== TODAY SCHEDULE MODAL (NEW) =====
+function renderTodaySchedule() {
+  if (!currentState) return;
+  var container = document.getElementById("todayBlocksContainer");
+  if (!container) return;
+
+  container.innerHTML = "";
+
+  // Get current blocks: either from override or from regular schedule
+  var dayKey = getDayKey();
+  var scheduleEntry = currentState.schedule[dayKey];
+  var blocks = [];
+
+  if (currentState.todayOverride && currentState.todayOverride.blocks) {
+    blocks = currentState.todayOverride.blocks;
+  } else if (scheduleEntry && scheduleEntry.work && scheduleEntry.blocks) {
+    blocks = scheduleEntry.blocks;
+  }
+
+  if (blocks.length === 0) {
+    // Show empty state with hint
+    container.innerHTML = '<div class="today-empty-hint">No work blocks set. Add your work periods below.</div>';
+  }
+
+  blocks.forEach(function(block, index) {
+    addTodayBlockRow(block.start, block.end, index);
+  });
+
+  // Update the "Apply to recurring" checkbox state
+  var recurringCheckbox = document.getElementById("applyToRecurring");
+  if (recurringCheckbox) {
+    recurringCheckbox.checked = false;
+  }
+}
+
+function addTodayBlockRow(start, end, index) {
+  var container = document.getElementById("todayBlocksContainer");
+  if (!container) return;
+
+  var row = document.createElement("div");
+  row.className = "today-block-row";
+  row.dataset.index = index;
+
+  row.innerHTML = 
+    '<div class="today-block-time">' +
+      '<div class="time-input-group">' +
+        '<span class="time-label">Start</span>' +
+        '<input type="text" class="today-block-start" value="' + (start || "08:00") + '" maxlength="5" placeholder="HH:MM">' +
+      '</div>' +
+      '<span class="time-separator">→</span>' +
+      '<div class="time-input-group">' +
+        '<span class="time-label">End</span>' +
+        '<input type="text" class="today-block-end" value="' + (end || "10:00") + '" maxlength="5" placeholder="HH:MM">' +
+      '</div>' +
+    '</div>' +
+    '<button class="today-block-remove" title="Remove block">×</button>';
+
+  container.appendChild(row);
+
+  // Attach remove handler
+  row.querySelector('.today-block-remove').addEventListener('click', function() {
+    row.remove();
+    reindexTodayBlocks();
+  });
+}
+
+function reindexTodayBlocks() {
+  var rows = document.querySelectorAll('.today-block-row');
+  rows.forEach(function(row, i) {
+    row.dataset.index = i;
+  });
+}
+
+function getTodayBlocksFromUI() {
+  var rows = document.querySelectorAll('.today-block-row');
+  var blocks = [];
+  var timeRe = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+
+  for (var i = 0; i < rows.length; i++) {
+    var start = rows[i].querySelector('.today-block-start').value.trim();
+    var end = rows[i].querySelector('.today-block-end').value.trim();
+
+    if (!timeRe.test(start) || !timeRe.test(end)) {
+      showToast('Invalid time in block ' + (i+1) + '. Use HH:MM.', 'error');
+      return null;
+    }
+
+    var p = start.split(':').map(Number);
+    var q = end.split(':').map(Number);
+    if (p[0]*60+p[1] >= q[0]*60+q[1]) {
+      showToast('End must be after start in block ' + (i+1), 'error');
+      return null;
+    }
+
+    blocks.push({start: start, end: end});
+  }
+
+  return blocks;
+}
+
+async function saveTodaySchedule() {
+  var blocks = getTodayBlocksFromUI();
+  if (blocks === null) return; // validation failed
+
+  var applyToRecurring = document.getElementById("applyToRecurring").checked;
+
+  try {
+    // Save as today override
+    var resp = await sendMsg({type: "SET_TODAY_OVERRIDE", blocks: blocks});
+    if (resp.state) {
+      currentState = resp.state;
+
+      // If user wants to save to recurring schedule too
+      if (applyToRecurring && blocks.length > 0) {
+        var dayKey = getDayKey();
+        var newSchedule = JSON.parse(JSON.stringify(currentState.schedule));
+        newSchedule[dayKey] = { work: true, blocks: blocks };
+
+        var configResp = await sendMsg({type: "SAVE_CONFIG", schedule: newSchedule});
+        if (configResp.state) {
+          currentState = configResp.state;
+        }
+      }
+
+      updateUI(currentState);
+      closeModal('todayScheduleModal');
+      showToast('Today\'s schedule saved! Auto-detection active during work blocks.', 'success');
+    }
+  } catch (e) {
+    console.error('[WFM] Save today schedule error:', e);
+    showToast('Failed to save schedule', 'error');
+  }
+}
+
+async function clearTodayOverride() {
+  try {
+    var resp = await sendMsg({type: "CLEAR_TODAY_OVERRIDE"});
+    if (resp.state) {
+      currentState = resp.state;
+      updateUI(currentState);
+      closeModal('todayScheduleModal');
+      showToast('Custom schedule cleared. Using regular schedule.', 'info');
+    }
+  } catch (e) {
+    showToast('Failed to clear schedule', 'error');
+  }
+}
+
 // ===== EARNINGS =====
 function renderEarnings() {
   if (!currentState) return;
@@ -660,9 +964,7 @@ function renderEarnings() {
   var elFx = document.getElementById("fxRate");
   if (elU) elU.textContent = fmtCurrency(usd) + " USD";
   if (elM) elM.textContent = fmtCurrency(mxn) + " MXN";
-  // Don't overwrite fxRate input - let user edit it freely
-  // Only set initial value if empty
-  if (elFx && !elFx.value) elFx.value = currentState.exchangeRate;
+  if (elFx && document.activeElement !== elFx) elFx.value = currentState.exchangeRate;
 
   var logBox = document.getElementById("logBox");
   if (logBox) {
@@ -696,7 +998,6 @@ async function saveFx() {
     var resp = await sendMsg({type:"SAVE_CONFIG", exchangeRate: rate});
     if (resp.state) { 
       currentState = resp.state; 
-      // Sync the settings modal input too (only if not currently focused)
       var settingsFx = document.getElementById("settingsFx");
       if (settingsFx && document.activeElement !== settingsFx) settingsFx.value = rate;
       renderEarnings();
@@ -726,7 +1027,7 @@ async function exportCSV() {
   }
 }
 
-// ===== SCHEDULE =====
+// ===== SCHEDULE (Multi-block weekly) =====
 function renderSchedule() {
   var container = document.getElementById("scheduleTable");
   if (!container || !currentState) return;
@@ -734,25 +1035,54 @@ function renderSchedule() {
 
   var header = document.createElement("div");
   header.className = "sched-row sched-header";
-  header.innerHTML = '<label style="width:40px">Day</label><span style="width:24px;text-align:center">On</span><span style="width:65px;text-align:center">Start</span><span style="width:65px;text-align:center">End</span>';
+  header.innerHTML = '<label style="width:40px">Day</label><span style="width:24px;text-align:center">On</span><span style="flex:1;text-align:center">Work Blocks</span>';
   container.appendChild(header);
 
   DAY_NAMES.forEach(function(name, i) {
     var key = String(i);
-    var entry = currentState.schedule[key] || {work:false, start:"", end:""};
+    var entry = currentState.schedule[key] || {work:false, blocks:[]};
     var row = document.createElement("div");
-    row.className = "sched-row";
-    row.innerHTML = '<label>' + name + '</label><input type="checkbox" class="sched-work" data-key="' + key + '"' + (entry.work?" checked":"") + '><input type="text" class="sched-start" data-key="' + key + '" value="' + entry.start + '" placeholder="HH:MM" maxlength="5"' + (entry.work?"":" disabled") + '><input type="text" class="sched-end" data-key="' + key + '" value="' + entry.end + '" placeholder="HH:MM" maxlength="5"' + (entry.work?"":" disabled") + '>';
+    row.className = "sched-row multi-block-row";
+    row.dataset.day = key;
+
+    var blocksHtml = '';
+    if (entry.work && entry.blocks && entry.blocks.length > 0) {
+      blocksHtml = entry.blocks.map(function(b, idx) {
+        return '<span class="block-chip">' + b.start + '–' + b.end + '</span>';
+      }).join('');
+    } else {
+      blocksHtml = '<span class="block-chip empty">No blocks</span>';
+    }
+
+    row.innerHTML = 
+      '<label>' + name + '</label>' +
+      '<input type="checkbox" class="sched-work" data-key="' + key + '"' + (entry.work?" checked":"") + '>' +
+      '<div class="sched-blocks" data-key="' + key + '">' + blocksHtml + '</div>' +
+      '<button class="btn-edit-blocks" data-key="' + key + '" title="Edit blocks">✎</button>';
+
     container.appendChild(row);
+  });
+
+  // Attach edit handlers
+  container.querySelectorAll('.btn-edit-blocks').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var dayKey = this.dataset.key;
+      openDayBlockEditor(dayKey);
+    });
   });
 
   container.querySelectorAll('.sched-work').forEach(function(cb) {
     cb.addEventListener('change', function() {
       var key = this.dataset.key;
-      var start = container.querySelector('.sched-start[data-key="' + key + '"]');
-      var end = container.querySelector('.sched-end[data-key="' + key + '"]');
-      if (start) start.disabled = !this.checked;
-      if (end) end.disabled = !this.checked;
+      var blocksDiv = container.querySelector('.sched-blocks[data-key="' + key + '"]');
+      if (blocksDiv) {
+        if (!this.checked) {
+          blocksDiv.innerHTML = '<span class="block-chip empty">No blocks</span>';
+        } else {
+          // Enable default single block
+          blocksDiv.innerHTML = '<span class="block-chip">08:00–16:30</span>';
+        }
+      }
     });
   });
 
@@ -760,35 +1090,106 @@ function renderSchedule() {
   if (elRate) elRate.value = currentState.staticMinRate;
 }
 
-async function saveSchedule() {
-  var newSchedule = {};
-  var workEls = document.querySelectorAll(".sched-work");
-  var startEls = document.querySelectorAll(".sched-start");
-  var endEls = document.querySelectorAll(".sched-end");
-  var valid = true;
+// Day block editor for weekly schedule
+var editingDayKey = null;
 
-  workEls.forEach(function(el, i) {
-    var key = el.dataset.key;
-    var work = el.checked;
-    var start = startEls[i].value.trim();
-    var end = endEls[i].value.trim();
-    if (work) {
-      var timeRe = /^([01]?\d|2[0-3]):([0-5]\d)$/;
-      if (!timeRe.test(start) || !timeRe.test(end)) {
-        showToast('Invalid time for ' + DAY_NAMES[i] + '. Use HH:MM.', 'error');
-        valid = false; return;
-      }
-      var p = start.split(":").map(Number);
-      var q = end.split(":").map(Number);
-      if (p[0]*60+p[1] >= q[0]*60+q[1]) {
-        showToast('Start must be before end for ' + DAY_NAMES[i] + '.', 'error');
-        valid = false; return;
-      }
-    }
-    newSchedule[key] = {work: work, start: start, end: end};
+function openDayBlockEditor(dayKey) {
+  editingDayKey = dayKey;
+  var modal = document.getElementById("dayBlockEditorModal");
+  var title = document.getElementById("dayBlockEditorTitle");
+  var container = document.getElementById("dayBlockEditorContainer");
+
+  if (!modal || !container) return;
+
+  title.textContent = DAY_NAMES[parseInt(dayKey)] + ' Work Blocks';
+  container.innerHTML = "";
+
+  var entry = currentState.schedule[dayKey] || {work: false, blocks: []};
+  var blocks = (entry.work && entry.blocks) ? entry.blocks : [];
+
+  if (blocks.length === 0) {
+    addDayBlockEditorRow("08:00", "10:00");
+  } else {
+    blocks.forEach(function(b) {
+      addDayBlockEditorRow(b.start, b.end);
+    });
+  }
+
+  modal.classList.add('active');
+}
+
+function addDayBlockEditorRow(start, end) {
+  var container = document.getElementById("dayBlockEditorContainer");
+  if (!container) return;
+
+  var row = document.createElement("div");
+  row.className = "day-block-editor-row";
+
+  row.innerHTML = 
+    '<div class="time-input-group">' +
+      '<span class="time-label">Start</span>' +
+      '<input type="text" class="block-editor-start" value="' + (start || "08:00") + '" maxlength="5">' +
+    '</div>' +
+    '<span class="time-separator">→</span>' +
+    '<div class="time-input-group">' +
+      '<span class="time-label">End</span>' +
+      '<input type="text" class="block-editor-end" value="' + (end || "10:00") + '" maxlength="5">' +
+    '</div>' +
+    '<button class="block-editor-remove" title="Remove">×</button>';
+
+  container.appendChild(row);
+
+  row.querySelector('.block-editor-remove').addEventListener('click', function() {
+    row.remove();
   });
-  if (!valid) return;
+}
 
+async function saveDayBlockEditor() {
+  if (!editingDayKey) return;
+
+  var rows = document.querySelectorAll('.day-block-editor-row');
+  var blocks = [];
+  var timeRe = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+
+  for (var i = 0; i < rows.length; i++) {
+    var start = rows[i].querySelector('.block-editor-start').value.trim();
+    var end = rows[i].querySelector('.block-editor-end').value.trim();
+
+    if (!timeRe.test(start) || !timeRe.test(end)) {
+      showToast('Invalid time in block ' + (i+1), 'error');
+      return;
+    }
+
+    var p = start.split(':').map(Number);
+    var q = end.split(':').map(Number);
+    if (p[0]*60+p[1] >= q[0]*60+q[1]) {
+      showToast('End must be after start in block ' + (i+1), 'error');
+      return;
+    }
+
+    blocks.push({start: start, end: end});
+  }
+
+  var newSchedule = JSON.parse(JSON.stringify(currentState.schedule));
+  newSchedule[editingDayKey] = { work: blocks.length > 0, blocks: blocks };
+
+  try {
+    var resp = await sendMsg({type: "SAVE_CONFIG", schedule: newSchedule});
+    if (resp.state) {
+      currentState = resp.state;
+      renderSchedule();
+      updateUI(currentState);
+      closeModal('dayBlockEditorModal');
+      showToast('Schedule updated!', 'success');
+    }
+  } catch (e) {
+    showToast('Failed to save schedule', 'error');
+  }
+}
+
+async function saveSchedule() {
+  // In multi-block mode, schedule is saved per-day via the block editor
+  // This button now just saves the pay rate
   var rate = parseFloat(document.getElementById("rateInput").value);
   if (isNaN(rate) || rate <= 0) { 
     showToast('Enter a valid pay rate.', 'error'); 
@@ -796,15 +1197,15 @@ async function saveSchedule() {
   }
 
   try {
-    var resp = await sendMsg({type:"SAVE_CONFIG", schedule: newSchedule, staticMinRate: rate});
+    var resp = await sendMsg({type:"SAVE_CONFIG", staticMinRate: rate});
     if (resp.state) { 
       currentState = resp.state; 
       closeModal('scheduleModal'); 
       updateUI(currentState);
-      showToast('Schedule saved!', 'success');
+      showToast('Pay rate saved!', 'success');
     }
   } catch (e) {
-    showToast('Failed to save schedule', 'error');
+    showToast('Failed to save pay rate', 'error');
   }
 }
 
@@ -823,10 +1224,8 @@ function renderSettings() {
 
   if (elLocal) elLocal.value = String(currentState.localTzOffset || -6);
   if (elCompany) elCompany.value = String(currentState.companyTzOffset || -4);
-  if (elRate) elRate.value = currentState.staticMinRate;
-  // Don't overwrite fxRate input - let user edit it freely
-  // Only set initial value if empty
-  if (elFx && !elFx.value) elFx.value = currentState.exchangeRate;
+  if (elRate && document.activeElement !== elRate) elRate.value = currentState.staticMinRate;
+  if (elFx && document.activeElement !== elFx) elFx.value = currentState.exchangeRate;
   if (elCurrency) elCurrency.value = currentState.currencyDisplay || "both";
 
   var sched = document.getElementById("settingsSchedule");
@@ -835,58 +1234,25 @@ function renderSettings() {
   sched.innerHTML = "";
   var header = document.createElement("div");
   header.className = "sched-row sched-header";
-  header.innerHTML = '<label style="width:36px">Day</label><span style="width:20px;text-align:center">On</span><span style="width:60px;text-align:center">Start</span><span style="width:60px;text-align:center">End</span>';
+  header.innerHTML = '<label style="width:36px">Day</label><span style="width:20px;text-align:center">On</span><span style="flex:1;text-align:center">Blocks</span>';
   sched.appendChild(header);
 
   DAY_NAMES.forEach(function(name, i) {
     var key = String(i);
-    var entry = currentState.schedule[key] || {work:false, start:"", end:""};
+    var entry = currentState.schedule[key] || {work:false, blocks:[]};
     var row = document.createElement("div");
     row.className = "sched-row";
-    row.innerHTML = '<label>' + name + '</label><input type="checkbox" class="sett-work" data-key="' + key + '"' + (entry.work?" checked":"") + '><input type="text" class="sett-start" data-key="' + key + '" value="' + entry.start + '" placeholder="HH:MM" maxlength="5"' + (entry.work?"":" disabled") + '><input type="text" class="sett-end" data-key="' + key + '" value="' + entry.end + '" placeholder="HH:MM" maxlength="5"' + (entry.work?"":" disabled") + '>';
-    sched.appendChild(row);
-  });
 
-  sched.querySelectorAll('.sett-work').forEach(function(cb) {
-    cb.addEventListener('change', function() {
-      var key = this.dataset.key;
-      var start = sched.querySelector('.sett-start[data-key="' + key + '"]');
-      var end = sched.querySelector('.sett-end[data-key="' + key + '"]');
-      if (start) start.disabled = !this.checked;
-      if (end) end.disabled = !this.checked;
-    });
+    var blocksText = (entry.work && entry.blocks && entry.blocks.length > 0) 
+      ? entry.blocks.map(function(b) { return b.start + '–' + b.end; }).join(', ')
+      : '—';
+
+    row.innerHTML = '<label>' + name + '</label><input type="checkbox" class="sett-work" data-key="' + key + '"' + (entry.work?" checked":"") + ' disabled><span style="flex:1;font-size:11px;color:var(--muted);padding-left:8px;">' + blocksText + '</span>';
+    sched.appendChild(row);
   });
 }
 
 async function saveSettings() {
-  var newSchedule = {};
-  var workEls = document.querySelectorAll(".sett-work");
-  var startEls = document.querySelectorAll(".sett-start");
-  var endEls = document.querySelectorAll(".sett-end");
-  var valid = true;
-
-  workEls.forEach(function(el, i) {
-    var key = el.dataset.key;
-    var work = el.checked;
-    var start = startEls[i].value.trim();
-    var end = endEls[i].value.trim();
-    if (work) {
-      var timeRe = /^([01]?\d|2[0-3]):([0-5]\d)$/;
-      if (!timeRe.test(start) || !timeRe.test(end)) {
-        showToast('Invalid time for ' + DAY_NAMES[i] + '. Use HH:MM.', 'error');
-        valid = false; return;
-      }
-      var p = start.split(":").map(Number);
-      var q = end.split(":").map(Number);
-      if (p[0]*60+p[1] >= q[0]*60+q[1]) {
-        showToast('Start must be before end for ' + DAY_NAMES[i] + '.', 'error');
-        valid = false; return;
-      }
-    }
-    newSchedule[key] = {work: work, start: start, end: end};
-  });
-  if (!valid) return;
-
   var rate = parseFloat(document.getElementById("settingsRate").value);
   var fx = parseFloat(document.getElementById("settingsFx").value);
   var localTz = parseFloat(document.getElementById("localTzSelect").value);
@@ -901,7 +1267,6 @@ async function saveSettings() {
   try {
     var resp = await sendMsg({
       type: "SAVE_CONFIG", 
-      schedule: newSchedule, 
       staticMinRate: rate, 
       exchangeRate: fx, 
       localTzOffset: localTz, 
@@ -910,7 +1275,6 @@ async function saveSettings() {
     });
     if (resp.state) { 
       currentState = resp.state; 
-      // Sync the earnings modal input too (only if not currently focused)
       var fxRate = document.getElementById("fxRate");
       if (fxRate && document.activeElement !== fxRate) fxRate.value = currentState.exchangeRate;
       closeModal('settingsModal'); 
@@ -954,6 +1318,12 @@ document.addEventListener('DOMContentLoaded', function() {
   document.getElementById('btnScheduleIcon').addEventListener('click', function() { openModal('scheduleModal'); });
   document.getElementById('btnSettingsIcon').addEventListener('click', function() { openModal('settingsModal'); });
 
+  // Today schedule button
+  var todaySchedBtn = document.getElementById('todayScheduleBtn');
+  if (todaySchedBtn) {
+    todaySchedBtn.addEventListener('click', function() { openModal('todayScheduleModal'); });
+  }
+
   // Workshift buttons
   document.getElementById("btnBeginWorkshift").addEventListener("click", function() {
     doAction("BEGIN_WORKSHIFT").then(function(state) {
@@ -990,14 +1360,13 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!val) { val = "06:00"; }
     var parts = val.split(':').map(Number);
     var totalMin = parts[0] * 60 + parts[1] + deltaMinutes;
-    // Wrap around 24h
     totalMin = ((totalMin % 1440) + 1440) % 1440;
     var h = Math.floor(totalMin / 60);
     var m = totalMin % 60;
     input.value = pad2(h) + ':' + pad2(m);
   }
 
-  // Time control buttons
+  // Time control buttons for add call
   document.getElementById("btnStartDown").addEventListener("click", function() {
     adjustTime("addCallStart", -30);
   });
@@ -1017,7 +1386,6 @@ document.addEventListener('DOMContentLoaded', function() {
     var end = document.getElementById("addCallEnd").value;
     if (selectedDateKey) {
       addCall(selectedDateKey, start, end);
-      // Reset to defaults after adding
       document.getElementById("addCallStart").value = "06:00";
       document.getElementById("addCallEnd").value = "07:00";
     }
@@ -1029,6 +1397,37 @@ document.addEventListener('DOMContentLoaded', function() {
       refreshDayEarnings(selectedDateKey);
     }
   });
+
+  // Today schedule modal buttons
+  var btnAddTodayBlock = document.getElementById("btnAddTodayBlock");
+  if (btnAddTodayBlock) {
+    btnAddTodayBlock.addEventListener('click', function() {
+      addTodayBlockRow("08:00", "10:00");
+    });
+  }
+
+  var btnSaveTodaySchedule = document.getElementById("btnSaveTodaySchedule");
+  if (btnSaveTodaySchedule) {
+    btnSaveTodaySchedule.addEventListener('click', saveTodaySchedule);
+  }
+
+  var btnClearTodayOverride = document.getElementById("btnClearTodayOverride");
+  if (btnClearTodayOverride) {
+    btnClearTodayOverride.addEventListener('click', clearTodayOverride);
+  }
+
+  // Day block editor buttons
+  var btnAddDayBlock = document.getElementById("btnAddDayBlock");
+  if (btnAddDayBlock) {
+    btnAddDayBlock.addEventListener('click', function() {
+      addDayBlockEditorRow("08:00", "10:00");
+    });
+  }
+
+  var btnSaveDayBlocks = document.getElementById("btnSaveDayBlocks");
+  if (btnSaveDayBlocks) {
+    btnSaveDayBlocks.addEventListener('click', saveDayBlockEditor);
+  }
 
   // Modal actions
   document.getElementById("btnSaveFx").addEventListener("click", saveFx);
@@ -1074,10 +1473,13 @@ document.addEventListener('DOMContentLoaded', function() {
       if (resp.state) {
         currentState = resp.state;
         updateUI(resp.state);
-        // Re-render earnings modal if open
         var earnModal = document.getElementById("earningsModal");
         if (earnModal && earnModal.classList.contains("active")) {
           renderEarnings();
+        }
+        var histModal = document.getElementById("historyModal");
+        if (histModal && histModal.classList.contains("active")) {
+          renderMonthTotals(calendarDate.getFullYear(), calendarDate.getMonth());
         }
       }
     } catch (e) {
@@ -1087,4 +1489,5 @@ document.addEventListener('DOMContentLoaded', function() {
 
   console.log("[WFM] Popup ready");
 })();
+
 
