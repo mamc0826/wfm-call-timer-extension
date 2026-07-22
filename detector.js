@@ -1,6 +1,6 @@
 // ── Content Script: Auto-detect call activity on web softphone pages ─────────
 // Enhanced for LSA InterpreCloud (agent.lsaweb.com) + generic softphones
-// v2.5.1 — Fixed: Extension context invalidated error handling
+// v2.6 — Compatible with multi-block schedule system
 
 (function() {
   'use strict';
@@ -12,7 +12,7 @@
   let checkInterval = null;
   let hostname = location.hostname.toLowerCase();
   let isLSA = hostname.includes('lsaweb.com') || hostname.includes('agent.lsaweb');
-  let extensionValid = true;  // Track if extension context is still valid
+  let extensionValid = true;
 
   // ── Safe messaging wrapper ───────────────────────────────────────────────────
   function sendMessageSafe(msg) {
@@ -20,7 +20,6 @@
     try {
       chrome.runtime.sendMessage(msg, (resp) => {
         if (chrome.runtime.lastError) {
-          // Extension context invalidated or other runtime error
           if (chrome.runtime.lastError.message && 
               chrome.runtime.lastError.message.includes('Extension context invalidated')) {
             extensionValid = false;
@@ -49,22 +48,16 @@
     const bodyText = document.body ? document.body.innerText : '';
     const bodyHTML = document.body ? document.body.innerHTML : '';
 
-    // WRAP-UP indicators (call ended, agent finalizing notes)
-    // This has HIGHEST priority after on-call because it means call just ended
     const wrapupIndicators = [
       bodyText.includes('Wrap-Up'),
       bodyText.includes('Call result'),
       bodyText.includes('Save and close'),
       bodyText.includes('Make unavailable after call'),
-      // The wrap-up tab/button is active/highlighted
-      !!document.querySelector('.active, .selected, .highlighted'), // generic active tab
-      // Call info panel visible but no active timer
+      !!document.querySelector('.active, .selected, .highlighted'),
       (bodyText.includes('Account code') || bodyText.includes('Call ID')) && 
       !bodyText.includes('In Progress') && !bodyText.includes('Connected'),
     ];
 
-    // ACTIVE CALL indicators (timer should be running)
-    // Must NOT be in wrap-up
     const activeIndicators = [
       bodyText.includes('In Progress'),
       bodyText.includes('Connected'),
@@ -76,7 +69,6 @@
       !!document.querySelector('button[aria-label*="end"], button[title*="end"], [class*="end-call"], [class*="hangup"], [class*="disconnect"]'),
     ];
 
-    // RINGING / INCOMING indicators
     const ringingIndicators = [
       bodyText.includes('Incoming Call'),
       bodyText.includes('Softphone Ringing'),
@@ -84,7 +76,6 @@
       !!document.querySelector('button[aria-label*="Answer"], button[title*="Answer"], [class*="answer"]'),
     ];
 
-    // UNAVAILABLE / BREAK indicators
     const breakIndicators = [
       bodyText.includes('Short Break'),
       bodyText.includes('Long Break'),
@@ -95,7 +86,6 @@
       !!Array.from(document.querySelectorAll('span, div, label, button, a')).find(el =>
         /^\s*Unavailable\s*$/i.test(el.textContent)
       ),
-      // Red badge style detection
       !!Array.from(document.querySelectorAll('*')).find(el => {
         const style = window.getComputedStyle(el);
         const bg = style.backgroundColor;
@@ -104,7 +94,6 @@
       }),
     ];
 
-    // READY indicators — agent is available for calls
     const readyIndicators = [
       bodyText.includes('Softphone Ready'),
       bodyText.includes('Available'),
@@ -119,18 +108,13 @@
     const breakScore = breakIndicators.filter(Boolean).length;
     const readyScore = readyIndicators.filter(Boolean).length;
 
-    // State priority: onCall > wrapup > onBreak > isReady > ringing
     return {
       onCall: activeScore >= 2 && wrapupScore < 2,
       wrapUp: wrapupScore >= 2,
       ringing: ringingScore >= 2,
       onBreak: breakScore >= 2,
       isReady: readyScore >= 1 && breakScore < 2,
-      activeScore,
-      wrapupScore,
-      ringingScore,
-      breakScore,
-      readyScore
+      activeScore, wrapupScore, ringingScore, breakScore, readyScore
     };
   }
 
@@ -223,9 +207,7 @@
     }
   }
 
-  // Debounce: require 3 consecutive "no call" checks before ending
   let noCallCount = 0;
-
   let lastBreakState = false;
   let lastReadyState = false;
   let lastWrapupState = false;
@@ -234,7 +216,6 @@
   let wrapupDebounce = 0;
 
   function tick() {
-    // Stop if extension context is no longer valid
     if (!extensionValid) {
       if (checkInterval) {
         clearInterval(checkInterval);
@@ -246,20 +227,17 @@
     const state = detectCallState();
 
     if (isLSA) {
-      // 1. Handle active calls (highest priority)
       if (state.onCall) {
         onCallDetected();
         noCallCount = 0;
         wrapupDebounce = 0;
-        // Reset other tracking when on call
         lastBreakState = false;
         lastReadyState = false;
         lastWrapupState = false;
       } else if (state.wrapUp) {
-        // 2. Wrap-up state — call ended, agent doing notes
         noCallCount++;
         if (noCallCount >= 2) {
-          onCallEnded(); // Stop the timer
+          onCallEnded();
           noCallCount = 0;
         }
         wrapupDebounce++;
@@ -278,7 +256,6 @@
         wrapupDebounce = 0;
         lastWrapupState = false;
 
-        // 3. Handle break detection (only when NOT on a call or wrap-up)
         if (state.onBreak) {
           breakDebounce++;
           readyDebounce = 0;
@@ -301,7 +278,6 @@
         }
       }
     } else {
-      // Generic
       if (state.onCall) {
         onCallDetected();
         noCallCount = 0;
@@ -315,14 +291,12 @@
     }
   }
 
-  // ── Start monitoring ────────────────────────────────────────────────────────
   checkInterval = setInterval(tick, 2000);
 
   document.addEventListener('visibilitychange', () => {
-    // Keep checking even if tab is hidden — calls don't stop when you switch tabs
+    // Keep checking even if tab is hidden
   });
 
-  // ── Listen for extension unload to clean up ─────────────────────────────────
   window.addEventListener('beforeunload', () => {
     if (checkInterval) {
       clearInterval(checkInterval);
@@ -330,5 +304,5 @@
     }
   });
 
-  console.log('[WFM Call Timer] Content script loaded on', location.hostname, isLSA ? '(LSA InterpreCloud detected)' : '');
+  console.log('[WFM Call Timer] Content script loaded v2.6 on', location.hostname, isLSA ? '(LSA InterpreCloud detected)' : '');
 })();

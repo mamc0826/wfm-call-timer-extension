@@ -3,7 +3,7 @@
 PROJECT OVERVIEW
 ================================================================================
 
-ROOT:             C:\Users\A2TEK\Desktop\wfm_call_timer_v2.5
+ROOT:             C:\Users\A2TEK\Desktop\projects\wfm_call_timer_v2.5
 IMPORTANT FILES:  6
 MAX FILE SIZE:    250 KB
 MAX TOTAL OUTPUT: 5120 KB
@@ -28,18 +28,19 @@ FILE CONTENTS
 --------------------------------------------------------------------------------
 FILE: background.js
 --------------------------------------------------------------------------------
-// WFM Call Timer - Background Service Worker v2.5
-// Added: Historical data storage, call editing, calendar support, currency preference
+// WFM Call Timer - Background Service Worker v2.6
+// Added: Multi-block daily schedules, today-only override, calendar color coding
+// Added: Data migration from v2.5 format
 
 const DEFAULTS = {
   schedule: {
-    "0": { work: false, start: "", end: "" },
-    "1": { work: true,  start: "08:00", end: "16:30" },
-    "2": { work: true,  start: "08:00", end: "16:30" },
-    "3": { work: false, start: "", end: "" },
-    "4": { work: false, start: "", end: "" },
-    "5": { work: true,  start: "08:00", end: "16:30" },
-    "6": { work: false, start: "", end: "" },
+    "0": { work: false, blocks: [] },
+    "1": { work: true,  blocks: [{start: "08:00", end: "16:30"}] },
+    "2": { work: true,  blocks: [{start: "08:00", end: "16:30"}] },
+    "3": { work: false, blocks: [] },
+    "4": { work: false, blocks: [] },
+    "5": { work: true,  blocks: [{start: "08:00", end: "16:30"}] },
+    "6": { work: false, blocks: [] },
   },
   exchangeRate: 17.50,
   staticMinRate: 0.14,
@@ -54,10 +55,12 @@ const DEFAULTS = {
   callStartMono: null,
   calls: [],
   todayDate: null,
-  // NEW: Currency display preference ("usd", "mxn", "both")
   currencyDisplay: "both",
-  // NEW: Historical data storage
-  history: {},  // Format: "2026-06-15": { calls: [...], totalDuration: 0, totalEarnings: 0 }
+  history: {},
+  // NEW: Today-only schedule override (cleared daily)
+  todayOverride: null,  // Format: { blocks: [{start:"08:00", end:"10:00"}, ...] }
+  // NEW: Version tracking for migrations
+  dataVersion: "2.6"
 };
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -73,21 +76,33 @@ function getDayKey() {
   return String(new Date().getDay());
 }
 
-function isWithinHours(entry) {
-  if (!entry || !entry.work) return false;
+function timeToMinutes(timeStr) {
+  const [h, m] = timeStr.split(":").map(Number);
+  return h * 60 + m;
+}
+
+function isWithinBlocks(blocks) {
+  if (!blocks || blocks.length === 0) return false;
   const now = new Date();
-  const [sh, sm] = entry.start.split(":").map(Number);
-  const [eh, em] = entry.end.split(":").map(Number);
   const nowMin = now.getHours() * 60 + now.getMinutes();
-  return (sh * 60 + sm) <= nowMin && nowMin <= (eh * 60 + em);
+  for (const block of blocks) {
+    const startMin = timeToMinutes(block.start);
+    const endMin = timeToMinutes(block.end);
+    if (startMin <= nowMin && nowMin <= endMin) return true;
+  }
+  return false;
 }
 
 function isTodayActive(state) {
+  // Check today override first
+  if (state.todayOverride && state.todayOverride.blocks && state.todayOverride.blocks.length > 0) {
+    return isWithinBlocks(state.todayOverride.blocks);
+  }
   const entry = state.schedule[getDayKey()];
   if (!entry) return false;
   if (state.otToday) return true;
   if (state.shiftEnded) return false;
-  return isWithinHours(entry);
+  return entry.work && isWithinBlocks(entry.blocks);
 }
 
 function totalDuration(state) {
@@ -101,11 +116,73 @@ function currentDuration(state) {
   return Math.floor((Date.now() - state.callStartMono) / 1000);
 }
 
+// ===== MIGRATION HELPERS =====
+function migrateSchedule(oldSchedule) {
+  // Convert old format {work, start, end} to new format {work, blocks: [{start, end}]}
+  const newSchedule = {};
+  for (let i = 0; i < 7; i++) {
+    const key = String(i);
+    const old = oldSchedule ? oldSchedule[key] : null;
+    if (!old) {
+      newSchedule[key] = { work: false, blocks: [] };
+      continue;
+    }
+    // Already in new format?
+    if (old.blocks && Array.isArray(old.blocks)) {
+      newSchedule[key] = { work: old.work, blocks: old.blocks };
+      continue;
+    }
+    // Old format: convert single block
+    if (old.work && old.start && old.end) {
+      newSchedule[key] = { work: true, blocks: [{start: old.start, end: old.end}] };
+    } else {
+      newSchedule[key] = { work: false, blocks: [] };
+    }
+  }
+  return newSchedule;
+}
+
+function migrateState(storedState) {
+  if (!storedState) return { ...DEFAULTS };
+
+  let state = { ...DEFAULTS, ...storedState };
+
+  // Migrate schedule from old format
+  if (state.schedule && !state.dataVersion) {
+    console.log('[WFM] Migrating schedule from v2.5 format to v2.6 multi-block format');
+    state.schedule = migrateSchedule(state.schedule);
+  }
+
+  // Ensure all schedule entries have blocks array
+  for (let i = 0; i < 7; i++) {
+    const key = String(i);
+    if (!state.schedule[key]) {
+      state.schedule[key] = { work: false, blocks: [] };
+    } else if (!state.schedule[key].blocks) {
+      // Single block old format still lingering
+      const old = state.schedule[key];
+      if (old.work && old.start && old.end) {
+        state.schedule[key] = { work: true, blocks: [{start: old.start, end: old.end}] };
+      } else {
+        state.schedule[key] = { work: false, blocks: [] };
+      }
+    }
+  }
+
+  // Ensure todayOverride exists
+  if (!state.todayOverride) state.todayOverride = null;
+
+  // Ensure dataVersion
+  state.dataVersion = "2.6";
+
+  return state;
+}
+
 // ===== STATE MANAGEMENT =====
 async function loadState() {
   try {
     const stored = await chrome.storage.local.get("wfmState");
-    let state = stored.wfmState ? { ...DEFAULTS, ...stored.wfmState } : { ...DEFAULTS };
+    let state = stored.wfmState ? migrateState(stored.wfmState) : { ...DEFAULTS };
     const today = getTodayKey();
 
     // Reset daily stats
@@ -123,8 +200,10 @@ async function loadState() {
       state.callStartWall = null; 
       state.callStartMono = null; 
       state.wfmStatus = "ready";
+      // NEW: Clear today override on new day
+      state.todayOverride = null;
       await saveState(state);
-      console.log('[WFM] New day detected, stats reset');
+      console.log('[WFM] New day detected, stats reset + today override cleared');
     }
 
     if (!state.schedule || typeof state.schedule !== 'object') {
@@ -136,7 +215,6 @@ async function loadState() {
     if (!state.history) {
       state.history = {};
     }
-    // Ensure currencyDisplay has a value
     if (!state.currencyDisplay) {
       state.currencyDisplay = "both";
     }
@@ -156,7 +234,7 @@ async function saveState(state) {
   }
 }
 
-// ===== HISTORY FUNCTIONS (NEW) =====
+// ===== HISTORY FUNCTIONS =====
 function saveDayToHistory(state, dateKey) {
   if (!state.history) state.history = {};
   const totalDur = state.calls.reduce((s, c) => s + c.duration, 0);
@@ -321,6 +399,10 @@ async function setStatus(status) {
 async function toggleOT() {
   const state = await loadState();
   state.otToday = !state.otToday;
+  // When toggling OT, also clear today override so OT takes full control
+  if (state.otToday) {
+    state.todayOverride = null;
+  }
   await saveState(state);
   await updateBadge(state);
   console.log('[WFM] OT toggled:', state.otToday);
@@ -352,6 +434,28 @@ async function resumeShift() {
   await saveState(state);
   await updateBadge(state);
   console.log('[WFM] Shift resumed (OT)');
+  return state;
+}
+
+// NEW: Set today's override schedule
+async function setTodayOverride(blocks) {
+  const state = await loadState();
+  state.todayOverride = { blocks: blocks };
+  // Disable OT when using custom schedule
+  state.otToday = false;
+  state.shiftEnded = false;
+  await saveState(state);
+  await updateBadge(state);
+  console.log('[WFM] Today override set:', blocks.length, 'blocks');
+  return state;
+}
+
+// NEW: Clear today's override
+async function clearTodayOverride() {
+  const state = await loadState();
+  state.todayOverride = null;
+  await saveState(state);
+  console.log('[WFM] Today override cleared');
   return state;
 }
 
@@ -409,6 +513,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           state = await resumeShift(); 
           sendResponse({ state }); 
           break;
+        // NEW: Today override messages
+        case "SET_TODAY_OVERRIDE":
+          state = await setTodayOverride(msg.blocks);
+          sendResponse({ state });
+          break;
+        case "CLEAR_TODAY_OVERRIDE":
+          state = await clearTodayOverride();
+          sendResponse({ state });
+          break;
         case "SAVE_CONFIG":
           state = await loadState();
           if (msg.schedule) state.schedule = msg.schedule;
@@ -431,7 +544,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           })];
           sendResponse({ csv: rows.map(r => r.join(",")).join("\n") });
           break;
-        // HISTORY API (NEW)
+        // HISTORY API
         case "GET_HISTORY":
           state = await loadState();
           const dayData = getDayHistory(state, msg.dateKey);
@@ -440,7 +553,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "ADD_CALL":
           state = await loadState();
           const added = addCallToHistory(state, msg.dateKey, msg.startTime, msg.endTime);
-          // If adding to today, also sync state.calls so main UI reflects it
           if (msg.dateKey === state.todayDate && added) {
             const lastCall = added.calls[added.calls.length - 1];
             state.calls.push(lastCall);
@@ -451,7 +563,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "DELETE_CALL":
           state = await loadState();
           const deleted = deleteCallFromHistory(state, msg.dateKey, msg.callIndex);
-          // If deleting from today, also sync state.calls so main UI reflects it
           if (msg.dateKey === state.todayDate && deleted) {
             state.calls.splice(msg.callIndex, 1);
           }
@@ -547,19 +658,67 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 });
 
-// ===== INSTALL =====
-chrome.runtime.onInstalled.addListener(async () => {
+// ===== DATA MIGRATION / PRESERVATION ON UPDATE =====
+chrome.runtime.onInstalled.addListener(async (details) => {
   try {
     await chrome.alarms.create("tick", { periodInMinutes: 0.5 });
-    await loadState();
-    console.log('[WFM] Extension installed/updated v2.5');
+
+    const stored = await chrome.storage.local.get("wfmState");
+
+    if (details.reason === "update") {
+      console.log('[WFM] Extension updated from', details.previousVersion, 'to', chrome.runtime.getManifest().version);
+
+      if (stored.wfmState) {
+        // Preserve existing data while migrating to new format
+        const mergedState = migrateState(stored.wfmState);
+
+        // Ensure history object exists
+        if (!mergedState.history) {
+          mergedState.history = {};
+        }
+        // Ensure currencyDisplay exists
+        if (!mergedState.currencyDisplay) {
+          mergedState.currencyDisplay = "both";
+        }
+        // Ensure today's calls are preserved
+        if (!mergedState.calls) {
+          mergedState.calls = [];
+        }
+        // Ensure todayOverride exists
+        if (!mergedState.todayOverride) {
+          mergedState.todayOverride = null;
+        }
+
+        await chrome.storage.local.set({ wfmState: mergedState });
+        console.log('[WFM] Data migrated successfully. History entries:', Object.keys(mergedState.history || {}).length);
+
+        // Show notification about update
+        chrome.notifications?.create?.({
+          type: 'basic',
+          iconUrl: 'icons/icon128.png',
+          title: 'WFM Call Timer Updated',
+          message: 'Multi-block schedules & calendar colors added. Your history is preserved.',
+          priority: 1
+        });
+      }
+    } else if (details.reason === "install") {
+      console.log('[WFM] Extension installed v2.6');
+      await loadState();
+    } else if (details.reason === "chrome_update") {
+      console.log('[WFM] Chrome updated, extension reloaded');
+      if (stored.wfmState) {
+        const mergedState = migrateState(stored.wfmState);
+        await chrome.storage.local.set({ wfmState: mergedState });
+      }
+    }
+
+    console.log('[WFM] Extension installed/updated v2.6');
   } catch (e) {
-    console.error('[WFM] Install error:', e);
+    console.error('[WFM] Install/update error:', e);
   }
 });
 
-console.log('[WFM] Background service worker loaded v2.5');
-
+console.log('[WFM] Background service worker loaded v2.6');
 
 
 --------------------------------------------------------------------------------
@@ -567,7 +726,7 @@ FILE: detector.js
 --------------------------------------------------------------------------------
 // ── Content Script: Auto-detect call activity on web softphone pages ─────────
 // Enhanced for LSA InterpreCloud (agent.lsaweb.com) + generic softphones
-// v2.5.1 — Fixed: Extension context invalidated error handling
+// v2.6 — Compatible with multi-block schedule system
 
 (function() {
   'use strict';
@@ -579,7 +738,7 @@ FILE: detector.js
   let checkInterval = null;
   let hostname = location.hostname.toLowerCase();
   let isLSA = hostname.includes('lsaweb.com') || hostname.includes('agent.lsaweb');
-  let extensionValid = true;  // Track if extension context is still valid
+  let extensionValid = true;
 
   // ── Safe messaging wrapper ───────────────────────────────────────────────────
   function sendMessageSafe(msg) {
@@ -587,7 +746,6 @@ FILE: detector.js
     try {
       chrome.runtime.sendMessage(msg, (resp) => {
         if (chrome.runtime.lastError) {
-          // Extension context invalidated or other runtime error
           if (chrome.runtime.lastError.message && 
               chrome.runtime.lastError.message.includes('Extension context invalidated')) {
             extensionValid = false;
@@ -616,22 +774,16 @@ FILE: detector.js
     const bodyText = document.body ? document.body.innerText : '';
     const bodyHTML = document.body ? document.body.innerHTML : '';
 
-    // WRAP-UP indicators (call ended, agent finalizing notes)
-    // This has HIGHEST priority after on-call because it means call just ended
     const wrapupIndicators = [
       bodyText.includes('Wrap-Up'),
       bodyText.includes('Call result'),
       bodyText.includes('Save and close'),
       bodyText.includes('Make unavailable after call'),
-      // The wrap-up tab/button is active/highlighted
-      !!document.querySelector('.active, .selected, .highlighted'), // generic active tab
-      // Call info panel visible but no active timer
+      !!document.querySelector('.active, .selected, .highlighted'),
       (bodyText.includes('Account code') || bodyText.includes('Call ID')) && 
       !bodyText.includes('In Progress') && !bodyText.includes('Connected'),
     ];
 
-    // ACTIVE CALL indicators (timer should be running)
-    // Must NOT be in wrap-up
     const activeIndicators = [
       bodyText.includes('In Progress'),
       bodyText.includes('Connected'),
@@ -643,7 +795,6 @@ FILE: detector.js
       !!document.querySelector('button[aria-label*="end"], button[title*="end"], [class*="end-call"], [class*="hangup"], [class*="disconnect"]'),
     ];
 
-    // RINGING / INCOMING indicators
     const ringingIndicators = [
       bodyText.includes('Incoming Call'),
       bodyText.includes('Softphone Ringing'),
@@ -651,7 +802,6 @@ FILE: detector.js
       !!document.querySelector('button[aria-label*="Answer"], button[title*="Answer"], [class*="answer"]'),
     ];
 
-    // UNAVAILABLE / BREAK indicators
     const breakIndicators = [
       bodyText.includes('Short Break'),
       bodyText.includes('Long Break'),
@@ -662,7 +812,6 @@ FILE: detector.js
       !!Array.from(document.querySelectorAll('span, div, label, button, a')).find(el =>
         /^\s*Unavailable\s*$/i.test(el.textContent)
       ),
-      // Red badge style detection
       !!Array.from(document.querySelectorAll('*')).find(el => {
         const style = window.getComputedStyle(el);
         const bg = style.backgroundColor;
@@ -671,7 +820,6 @@ FILE: detector.js
       }),
     ];
 
-    // READY indicators — agent is available for calls
     const readyIndicators = [
       bodyText.includes('Softphone Ready'),
       bodyText.includes('Available'),
@@ -686,18 +834,13 @@ FILE: detector.js
     const breakScore = breakIndicators.filter(Boolean).length;
     const readyScore = readyIndicators.filter(Boolean).length;
 
-    // State priority: onCall > wrapup > onBreak > isReady > ringing
     return {
       onCall: activeScore >= 2 && wrapupScore < 2,
       wrapUp: wrapupScore >= 2,
       ringing: ringingScore >= 2,
       onBreak: breakScore >= 2,
       isReady: readyScore >= 1 && breakScore < 2,
-      activeScore,
-      wrapupScore,
-      ringingScore,
-      breakScore,
-      readyScore
+      activeScore, wrapupScore, ringingScore, breakScore, readyScore
     };
   }
 
@@ -790,9 +933,7 @@ FILE: detector.js
     }
   }
 
-  // Debounce: require 3 consecutive "no call" checks before ending
   let noCallCount = 0;
-
   let lastBreakState = false;
   let lastReadyState = false;
   let lastWrapupState = false;
@@ -801,7 +942,6 @@ FILE: detector.js
   let wrapupDebounce = 0;
 
   function tick() {
-    // Stop if extension context is no longer valid
     if (!extensionValid) {
       if (checkInterval) {
         clearInterval(checkInterval);
@@ -813,20 +953,17 @@ FILE: detector.js
     const state = detectCallState();
 
     if (isLSA) {
-      // 1. Handle active calls (highest priority)
       if (state.onCall) {
         onCallDetected();
         noCallCount = 0;
         wrapupDebounce = 0;
-        // Reset other tracking when on call
         lastBreakState = false;
         lastReadyState = false;
         lastWrapupState = false;
       } else if (state.wrapUp) {
-        // 2. Wrap-up state — call ended, agent doing notes
         noCallCount++;
         if (noCallCount >= 2) {
-          onCallEnded(); // Stop the timer
+          onCallEnded();
           noCallCount = 0;
         }
         wrapupDebounce++;
@@ -845,7 +982,6 @@ FILE: detector.js
         wrapupDebounce = 0;
         lastWrapupState = false;
 
-        // 3. Handle break detection (only when NOT on a call or wrap-up)
         if (state.onBreak) {
           breakDebounce++;
           readyDebounce = 0;
@@ -868,7 +1004,6 @@ FILE: detector.js
         }
       }
     } else {
-      // Generic
       if (state.onCall) {
         onCallDetected();
         noCallCount = 0;
@@ -882,14 +1017,12 @@ FILE: detector.js
     }
   }
 
-  // ── Start monitoring ────────────────────────────────────────────────────────
   checkInterval = setInterval(tick, 2000);
 
   document.addEventListener('visibilitychange', () => {
-    // Keep checking even if tab is hidden — calls don't stop when you switch tabs
+    // Keep checking even if tab is hidden
   });
 
-  // ── Listen for extension unload to clean up ─────────────────────────────────
   window.addEventListener('beforeunload', () => {
     if (checkInterval) {
       clearInterval(checkInterval);
@@ -897,7 +1030,7 @@ FILE: detector.js
     }
   });
 
-  console.log('[WFM Call Timer] Content script loaded on', location.hostname, isLSA ? '(LSA InterpreCloud detected)' : '');
+  console.log('[WFM Call Timer] Content script loaded v2.6 on', location.hostname, isLSA ? '(LSA InterpreCloud detected)' : '');
 })();
 
 
@@ -905,8 +1038,8 @@ FILE: detector.js
 FILE: popup.js
 --------------------------------------------------------------------------------
 // ============================================================
-// WFM CALL TIMER - POPUP SCRIPT (v2.5)
-// Features: Workshift gating, Calendar history, Call editing, Currency preference
+// WFM CALL TIMER - POPUP SCRIPT (v2.6)
+// Features: Multi-block daily schedules, today override, calendar color coding
 // ============================================================
 
 // ===== STATE =====
@@ -1030,13 +1163,47 @@ function curDur(state) {
   return Math.floor((Date.now()-state.callStartMono)/1000);
 }
 
-function isWithinHours(entry) {
-  if (!entry || !entry.work) return false;
+function timeToMinutes(timeStr) {
+  var p = timeStr.split(":").map(Number);
+  return p[0]*60 + p[1];
+}
+
+function isWithinBlocks(blocks) {
+  if (!blocks || blocks.length === 0) return false;
   var now = new Date();
-  var p = entry.start.split(":").map(Number);
-  var q = entry.end.split(":").map(Number);
   var nowMin = now.getHours()*60 + now.getMinutes();
-  return (p[0]*60+p[1]) <= nowMin && nowMin <= (q[0]*60+q[1]);
+  for (var i = 0; i < blocks.length; i++) {
+    var startMin = timeToMinutes(blocks[i].start);
+    var endMin = timeToMinutes(blocks[i].end);
+    if (startMin <= nowMin && nowMin <= endMin) return true;
+  }
+  return false;
+}
+
+function isTodayActive(state) {
+  if (!state) return false;
+  // Check today override first
+  if (state.todayOverride && state.todayOverride.blocks && state.todayOverride.blocks.length > 0) {
+    return isWithinBlocks(state.todayOverride.blocks);
+  }
+  var entry = state.schedule[getDayKey()];
+  if (!entry) return false;
+  if (state.otToday) return true;
+  if (state.shiftEnded) return false;
+  return entry.work && isWithinBlocks(entry.blocks);
+}
+
+function getDayKey() {
+  return String(new Date().getDay());
+}
+
+function getBlockDurationHours(blocks) {
+  if (!blocks || blocks.length === 0) return 0;
+  var total = 0;
+  for (var i = 0; i < blocks.length; i++) {
+    total += (timeToMinutes(blocks[i].end) - timeToMinutes(blocks[i].start));
+  }
+  return total / 60;
 }
 
 // ===== UI UPDATE =====
@@ -1164,12 +1331,14 @@ function updateUI(state) {
     }
   }
 
+  // Schedule bar - now supports multi-block display
   var dayKey = String(new Date().getDay());
   var dayData = state.schedule[dayKey];
   var dayName = DAY_NAMES[parseInt(dayKey)];
   var elSched = document.getElementById("scheduleText");
   var elSchedDot = document.getElementById("schedDot");
   var elOT = document.getElementById("btnOT");
+  var elTodaySched = document.getElementById("todayScheduleBtn");
 
   if (elSched && elOT) {
     if (state.shiftEnded) {
@@ -1177,11 +1346,22 @@ function updateUI(state) {
       elSched.style.color = "#ef4444";
       if (elSchedDot) elSchedDot.style.background = "#ef4444";
       elOT.style.display = "none";
-    } else if (dayData && dayData.work && isWithinHours(dayData)) {
-      elSched.textContent = dayName + " On Duty: " + dayData.start + " – " + dayData.end;
+      if (elTodaySched) elTodaySched.style.display = "none";
+    } else if (state.todayOverride && state.todayOverride.blocks && state.todayOverride.blocks.length > 0) {
+      // Today override active
+      var overrideText = state.todayOverride.blocks.map(function(b) { return b.start + "–" + b.end; }).join(", ");
+      elSched.textContent = dayName + " Custom: " + overrideText;
+      elSched.style.color = "var(--accent)";
+      if (elSchedDot) elSchedDot.style.background = "var(--accent)";
+      elOT.style.display = "none";
+      if (elTodaySched) elTodaySched.style.display = "inline-block";
+    } else if (dayData && dayData.work && isWithinBlocks(dayData.blocks)) {
+      var schedText = dayData.blocks.map(function(b) { return b.start + "–" + b.end; }).join(", ");
+      elSched.textContent = dayName + " On Duty: " + schedText;
       elSched.style.color = "var(--green)";
       if (elSchedDot) elSchedDot.style.background = "var(--green)";
       elOT.style.display = "none";
+      if (elTodaySched) elTodaySched.style.display = "inline-block";
     } else {
       if (state.otToday) {
         elSched.textContent = dayName + " — OT Mode Active";
@@ -1196,6 +1376,7 @@ function updateUI(state) {
         elOT.textContent = "Enable OT";
       }
       elOT.style.display = "inline-block";
+      if (elTodaySched) elTodaySched.style.display = "inline-block";
     }
   }
 
@@ -1273,6 +1454,7 @@ function openModal(id) {
     if (id === 'scheduleModal') renderSchedule();
     if (id === 'settingsModal') renderSettings();
     if (id === 'historyModal') renderCalendar();
+    if (id === 'todayScheduleModal') renderTodaySchedule();
 
     m.classList.add('active');
     document.body.style.overflow = 'hidden';
@@ -1295,12 +1477,70 @@ function closeModal(id) {
 }
 
 function closeAllModals() {
-  ['earningsModal', 'scheduleModal', 'settingsModal', 'historyModal'].forEach(function(id) {
+  ['earningsModal', 'scheduleModal', 'settingsModal', 'historyModal', 'todayScheduleModal'].forEach(function(id) {
     closeModal(id);
   });
 }
 
-// ===== CALENDAR / HISTORY (NEW) =====
+// ===== CALENDAR COLOR CODING =====
+function getDayHoursColor(hours) {
+  // Red: < 3 hours (light work)
+  // Yellow: 3-5 hours (moderate)
+  // Green: >= 5 hours (heavy)
+  if (hours >= 5) return 'green';
+  if (hours >= 3) return 'yellow';
+  return 'red';
+}
+
+function getDayHoursWorked(state, dateKey) {
+  // Get hours from history or today's data
+  var hours = 0;
+  if (state.history && state.history[dateKey]) {
+    hours = state.history[dateKey].totalDuration / 3600;
+  }
+  // Check if it's today
+  if (dateKey === state.todayDate) {
+    var todayHours = totalDur(state) / 3600;
+    if (todayHours > hours) hours = todayHours;
+  }
+  return hours;
+}
+
+// ===== CALENDAR / HISTORY =====
+function calculateMonthTotals(year, month) {
+  if (!currentState || !currentState.history) return { totalUSD: 0, totalMXN: 0, totalCalls: 0, totalDuration: 0 };
+
+  var daysInMonth = new Date(year, month + 1, 0).getDate();
+  var totalUSD = 0;
+  var totalDuration = 0;
+  var totalCalls = 0;
+
+  for (var d = 1; d <= daysInMonth; d++) {
+    var dk = year + '-' + pad2(month+1) + '-' + pad2(d);
+    if (currentState.history[dk]) {
+      totalUSD += currentState.history[dk].totalEarnings;
+      totalDuration += currentState.history[dk].totalDuration;
+      totalCalls += currentState.history[dk].callCount;
+    }
+  }
+
+  // Also include today's data if we're viewing the current month
+  var today = new Date();
+  var todayKey = getDateKey(today);
+  if (today.getFullYear() === year && today.getMonth() === month && currentState.todayDate === todayKey) {
+    var todayUSD = (totalDur(currentState)/60) * currentState.staticMinRate;
+    var todayDur = totalDur(currentState);
+    var todayCalls = currentState.calls.length;
+    totalUSD += todayUSD;
+    totalDuration += todayDur;
+    totalCalls += todayCalls;
+  }
+
+  var totalMXN = totalUSD * (currentState.exchangeRate || 17.50);
+
+  return { totalUSD: totalUSD, totalMXN: totalMXN, totalCalls: totalCalls, totalDuration: totalDuration };
+}
+
 function renderCalendar() {
   var grid = document.getElementById("calendarGrid");
   var monthYear = document.getElementById("calMonthYear");
@@ -1349,6 +1589,28 @@ function renderCalendar() {
     var div = createCalDay(year, month + 1, j, true);
     grid.appendChild(div);
   }
+
+  // Render month totals at bottom
+  renderMonthTotals(year, month);
+}
+
+function renderMonthTotals(year, month) {
+  var totalsPanel = document.getElementById("monthTotalsPanel");
+  var totalUSD = document.getElementById("monthTotalUSD");
+  var totalMXN = document.getElementById("monthTotalMXN");
+  var totalCalls = document.getElementById("monthTotalCalls");
+  var totalDur = document.getElementById("monthTotalDuration");
+
+  if (!totalsPanel) return;
+
+  totalsPanel.style.display = "block";
+
+  var totals = calculateMonthTotals(year, month);
+
+  if (totalUSD) totalUSD.textContent = fmtCurrency(totals.totalUSD) + " USD";
+  if (totalMXN) totalMXN.textContent = fmtCurrency(totals.totalMXN) + " MXN";
+  if (totalCalls) totalCalls.textContent = totals.totalCalls;
+  if (totalDur) totalDur.textContent = fmtShortTime(totals.totalDuration);
 }
 
 function createCalDay(year, month, day, isOtherMonth) {
@@ -1363,12 +1625,26 @@ function createCalDay(year, month, day, isOtherMonth) {
   num.textContent = day;
   div.appendChild(num);
 
+  // Color coding based on hours worked
+  var hoursWorked = 0;
+  var hasData = false;
+
+  if (currentState) {
+    hoursWorked = getDayHoursWorked(currentState, dk);
+    if (hoursWorked > 0) hasData = true;
+  }
+
+  // Apply color coding class
+  if (hasData && !isOtherMonth) {
+    var colorCode = getDayHoursColor(hoursWorked);
+    div.classList.add('cal-day-' + colorCode);
+  }
+
   // Check for history data
   if (currentState && currentState.history && currentState.history[dk]) {
     var hd = currentState.history[dk];
     var earnings = document.createElement("span");
     earnings.className = "cal-day-earnings";
-    // Show earnings based on currency preference
     earnings.textContent = fmtEarningsShort(hd.totalEarnings, currentState.exchangeRate);
     div.appendChild(earnings);
 
@@ -1413,6 +1689,7 @@ async function loadDayDetail(dateKey) {
   var statDur = document.getElementById("dayStatDuration");
   var statEarn = document.getElementById("dayStatEarnings");
   var list = document.getElementById("dayCallsList");
+  var hoursBadge = document.getElementById("dayHoursBadge");
 
   if (!panel) return;
   panel.style.display = "block";
@@ -1424,6 +1701,21 @@ async function loadDayDetail(dateKey) {
   try {
     var resp = await sendMsg({type: "GET_HISTORY", dateKey: dateKey});
     var dayData = resp.dayData;
+
+    // Show hours badge
+    if (hoursBadge) {
+      var hours = 0;
+      if (dayData) hours = dayData.totalDuration / 3600;
+      if (dateKey === currentState.todayDate) {
+        var todayHours = totalDur(currentState) / 3600;
+        if (todayHours > hours) hours = todayHours;
+      }
+      var colorCode = getDayHoursColor(hours);
+      var colorLabel = colorCode === 'green' ? 'Heavy Day' : (colorCode === 'yellow' ? 'Moderate' : 'Light Day');
+      hoursBadge.className = 'day-hours-badge day-hours-' + colorCode;
+      hoursBadge.textContent = hours.toFixed(1) + ' hrs — ' + colorLabel;
+      hoursBadge.style.display = hours > 0 ? 'inline-block' : 'none';
+    }
 
     if (!dayData || dayData.callCount === 0) {
       statCalls.textContent = "0";
@@ -1474,8 +1766,6 @@ async function loadDayDetail(dateKey) {
   }
 }
 
-
-
 async function refreshDayEarnings(dateKey) {
   var statEarn = document.getElementById("dayStatEarnings");
   var total = document.getElementById("dayDetailTotal");
@@ -1488,6 +1778,7 @@ async function refreshDayEarnings(dateKey) {
       statEarn.textContent = fmtEarningsShort(dayData.totalEarnings, currentState.exchangeRate);
       if (total) total.textContent = fmtEarnings(dayData.totalEarnings, currentState.exchangeRate) + " total";
       showToast("Earnings refreshed!", "success");
+      renderMonthTotals(calendarDate.getFullYear(), calendarDate.getMonth());
     }
   } catch (e) {
     showToast("Failed to refresh earnings", "error");
@@ -1503,7 +1794,6 @@ async function deleteCall(dateKey, callIndex) {
       loadDayDetail(dateKey);
       renderCalendar();
       await refreshState();
-      // Refresh earnings modal if open
       var earnModal = document.getElementById("earningsModal");
       if (earnModal && earnModal.classList.contains("active")) {
         renderEarnings();
@@ -1538,7 +1828,6 @@ async function addCall(dateKey, startTime, endTime) {
       loadDayDetail(dateKey);
       renderCalendar();
       await refreshState();
-      // Refresh earnings modal if open
       var earnModal = document.getElementById("earningsModal");
       if (earnModal && earnModal.classList.contains("active")) {
         renderEarnings();
@@ -1556,6 +1845,154 @@ function changeMonth(delta) {
   selectedDateKey = null;
 }
 
+// ===== TODAY SCHEDULE MODAL (NEW) =====
+function renderTodaySchedule() {
+  if (!currentState) return;
+  var container = document.getElementById("todayBlocksContainer");
+  if (!container) return;
+
+  container.innerHTML = "";
+
+  // Get current blocks: either from override or from regular schedule
+  var dayKey = getDayKey();
+  var scheduleEntry = currentState.schedule[dayKey];
+  var blocks = [];
+
+  if (currentState.todayOverride && currentState.todayOverride.blocks) {
+    blocks = currentState.todayOverride.blocks;
+  } else if (scheduleEntry && scheduleEntry.work && scheduleEntry.blocks) {
+    blocks = scheduleEntry.blocks;
+  }
+
+  if (blocks.length === 0) {
+    // Show empty state with hint
+    container.innerHTML = '<div class="today-empty-hint">No work blocks set. Add your work periods below.</div>';
+  }
+
+  blocks.forEach(function(block, index) {
+    addTodayBlockRow(block.start, block.end, index);
+  });
+
+  // Update the "Apply to recurring" checkbox state
+  var recurringCheckbox = document.getElementById("applyToRecurring");
+  if (recurringCheckbox) {
+    recurringCheckbox.checked = false;
+  }
+}
+
+function addTodayBlockRow(start, end, index) {
+  var container = document.getElementById("todayBlocksContainer");
+  if (!container) return;
+
+  var row = document.createElement("div");
+  row.className = "today-block-row";
+  row.dataset.index = index;
+
+  row.innerHTML = 
+    '<div class="today-block-time">' +
+      '<div class="time-input-group">' +
+        '<span class="time-label">Start</span>' +
+        '<input type="text" class="today-block-start" value="' + (start || "08:00") + '" maxlength="5" placeholder="HH:MM">' +
+      '</div>' +
+      '<span class="time-separator">→</span>' +
+      '<div class="time-input-group">' +
+        '<span class="time-label">End</span>' +
+        '<input type="text" class="today-block-end" value="' + (end || "10:00") + '" maxlength="5" placeholder="HH:MM">' +
+      '</div>' +
+    '</div>' +
+    '<button class="today-block-remove" title="Remove block">×</button>';
+
+  container.appendChild(row);
+
+  // Attach remove handler
+  row.querySelector('.today-block-remove').addEventListener('click', function() {
+    row.remove();
+    reindexTodayBlocks();
+  });
+}
+
+function reindexTodayBlocks() {
+  var rows = document.querySelectorAll('.today-block-row');
+  rows.forEach(function(row, i) {
+    row.dataset.index = i;
+  });
+}
+
+function getTodayBlocksFromUI() {
+  var rows = document.querySelectorAll('.today-block-row');
+  var blocks = [];
+  var timeRe = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+
+  for (var i = 0; i < rows.length; i++) {
+    var start = rows[i].querySelector('.today-block-start').value.trim();
+    var end = rows[i].querySelector('.today-block-end').value.trim();
+
+    if (!timeRe.test(start) || !timeRe.test(end)) {
+      showToast('Invalid time in block ' + (i+1) + '. Use HH:MM.', 'error');
+      return null;
+    }
+
+    var p = start.split(':').map(Number);
+    var q = end.split(':').map(Number);
+    if (p[0]*60+p[1] >= q[0]*60+q[1]) {
+      showToast('End must be after start in block ' + (i+1), 'error');
+      return null;
+    }
+
+    blocks.push({start: start, end: end});
+  }
+
+  return blocks;
+}
+
+async function saveTodaySchedule() {
+  var blocks = getTodayBlocksFromUI();
+  if (blocks === null) return; // validation failed
+
+  var applyToRecurring = document.getElementById("applyToRecurring").checked;
+
+  try {
+    // Save as today override
+    var resp = await sendMsg({type: "SET_TODAY_OVERRIDE", blocks: blocks});
+    if (resp.state) {
+      currentState = resp.state;
+
+      // If user wants to save to recurring schedule too
+      if (applyToRecurring && blocks.length > 0) {
+        var dayKey = getDayKey();
+        var newSchedule = JSON.parse(JSON.stringify(currentState.schedule));
+        newSchedule[dayKey] = { work: true, blocks: blocks };
+
+        var configResp = await sendMsg({type: "SAVE_CONFIG", schedule: newSchedule});
+        if (configResp.state) {
+          currentState = configResp.state;
+        }
+      }
+
+      updateUI(currentState);
+      closeModal('todayScheduleModal');
+      showToast('Today\'s schedule saved! Auto-detection active during work blocks.', 'success');
+    }
+  } catch (e) {
+    console.error('[WFM] Save today schedule error:', e);
+    showToast('Failed to save schedule', 'error');
+  }
+}
+
+async function clearTodayOverride() {
+  try {
+    var resp = await sendMsg({type: "CLEAR_TODAY_OVERRIDE"});
+    if (resp.state) {
+      currentState = resp.state;
+      updateUI(currentState);
+      closeModal('todayScheduleModal');
+      showToast('Custom schedule cleared. Using regular schedule.', 'info');
+    }
+  } catch (e) {
+    showToast('Failed to clear schedule', 'error');
+  }
+}
+
 // ===== EARNINGS =====
 function renderEarnings() {
   if (!currentState) return;
@@ -1566,8 +2003,6 @@ function renderEarnings() {
   var elFx = document.getElementById("fxRate");
   if (elU) elU.textContent = fmtCurrency(usd) + " USD";
   if (elM) elM.textContent = fmtCurrency(mxn) + " MXN";
-  // Don't overwrite fxRate input - let user edit it freely
-  // Only set initial value if empty
   if (elFx && !elFx.value) elFx.value = currentState.exchangeRate;
 
   var logBox = document.getElementById("logBox");
@@ -1602,7 +2037,6 @@ async function saveFx() {
     var resp = await sendMsg({type:"SAVE_CONFIG", exchangeRate: rate});
     if (resp.state) { 
       currentState = resp.state; 
-      // Sync the settings modal input too (only if not currently focused)
       var settingsFx = document.getElementById("settingsFx");
       if (settingsFx && document.activeElement !== settingsFx) settingsFx.value = rate;
       renderEarnings();
@@ -1632,7 +2066,7 @@ async function exportCSV() {
   }
 }
 
-// ===== SCHEDULE =====
+// ===== SCHEDULE (Multi-block weekly) =====
 function renderSchedule() {
   var container = document.getElementById("scheduleTable");
   if (!container || !currentState) return;
@@ -1640,25 +2074,54 @@ function renderSchedule() {
 
   var header = document.createElement("div");
   header.className = "sched-row sched-header";
-  header.innerHTML = '<label style="width:40px">Day</label><span style="width:24px;text-align:center">On</span><span style="width:65px;text-align:center">Start</span><span style="width:65px;text-align:center">End</span>';
+  header.innerHTML = '<label style="width:40px">Day</label><span style="width:24px;text-align:center">On</span><span style="flex:1;text-align:center">Work Blocks</span>';
   container.appendChild(header);
 
   DAY_NAMES.forEach(function(name, i) {
     var key = String(i);
-    var entry = currentState.schedule[key] || {work:false, start:"", end:""};
+    var entry = currentState.schedule[key] || {work:false, blocks:[]};
     var row = document.createElement("div");
-    row.className = "sched-row";
-    row.innerHTML = '<label>' + name + '</label><input type="checkbox" class="sched-work" data-key="' + key + '"' + (entry.work?" checked":"") + '><input type="text" class="sched-start" data-key="' + key + '" value="' + entry.start + '" placeholder="HH:MM" maxlength="5"' + (entry.work?"":" disabled") + '><input type="text" class="sched-end" data-key="' + key + '" value="' + entry.end + '" placeholder="HH:MM" maxlength="5"' + (entry.work?"":" disabled") + '>';
+    row.className = "sched-row multi-block-row";
+    row.dataset.day = key;
+
+    var blocksHtml = '';
+    if (entry.work && entry.blocks && entry.blocks.length > 0) {
+      blocksHtml = entry.blocks.map(function(b, idx) {
+        return '<span class="block-chip">' + b.start + '–' + b.end + '</span>';
+      }).join('');
+    } else {
+      blocksHtml = '<span class="block-chip empty">No blocks</span>';
+    }
+
+    row.innerHTML = 
+      '<label>' + name + '</label>' +
+      '<input type="checkbox" class="sched-work" data-key="' + key + '"' + (entry.work?" checked":"") + '>' +
+      '<div class="sched-blocks" data-key="' + key + '">' + blocksHtml + '</div>' +
+      '<button class="btn-edit-blocks" data-key="' + key + '" title="Edit blocks">✎</button>';
+
     container.appendChild(row);
+  });
+
+  // Attach edit handlers
+  container.querySelectorAll('.btn-edit-blocks').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var dayKey = this.dataset.key;
+      openDayBlockEditor(dayKey);
+    });
   });
 
   container.querySelectorAll('.sched-work').forEach(function(cb) {
     cb.addEventListener('change', function() {
       var key = this.dataset.key;
-      var start = container.querySelector('.sched-start[data-key="' + key + '"]');
-      var end = container.querySelector('.sched-end[data-key="' + key + '"]');
-      if (start) start.disabled = !this.checked;
-      if (end) end.disabled = !this.checked;
+      var blocksDiv = container.querySelector('.sched-blocks[data-key="' + key + '"]');
+      if (blocksDiv) {
+        if (!this.checked) {
+          blocksDiv.innerHTML = '<span class="block-chip empty">No blocks</span>';
+        } else {
+          // Enable default single block
+          blocksDiv.innerHTML = '<span class="block-chip">08:00–16:30</span>';
+        }
+      }
     });
   });
 
@@ -1666,35 +2129,106 @@ function renderSchedule() {
   if (elRate) elRate.value = currentState.staticMinRate;
 }
 
-async function saveSchedule() {
-  var newSchedule = {};
-  var workEls = document.querySelectorAll(".sched-work");
-  var startEls = document.querySelectorAll(".sched-start");
-  var endEls = document.querySelectorAll(".sched-end");
-  var valid = true;
+// Day block editor for weekly schedule
+var editingDayKey = null;
 
-  workEls.forEach(function(el, i) {
-    var key = el.dataset.key;
-    var work = el.checked;
-    var start = startEls[i].value.trim();
-    var end = endEls[i].value.trim();
-    if (work) {
-      var timeRe = /^([01]?\d|2[0-3]):([0-5]\d)$/;
-      if (!timeRe.test(start) || !timeRe.test(end)) {
-        showToast('Invalid time for ' + DAY_NAMES[i] + '. Use HH:MM.', 'error');
-        valid = false; return;
-      }
-      var p = start.split(":").map(Number);
-      var q = end.split(":").map(Number);
-      if (p[0]*60+p[1] >= q[0]*60+q[1]) {
-        showToast('Start must be before end for ' + DAY_NAMES[i] + '.', 'error');
-        valid = false; return;
-      }
-    }
-    newSchedule[key] = {work: work, start: start, end: end};
+function openDayBlockEditor(dayKey) {
+  editingDayKey = dayKey;
+  var modal = document.getElementById("dayBlockEditorModal");
+  var title = document.getElementById("dayBlockEditorTitle");
+  var container = document.getElementById("dayBlockEditorContainer");
+
+  if (!modal || !container) return;
+
+  title.textContent = DAY_NAMES[parseInt(dayKey)] + ' Work Blocks';
+  container.innerHTML = "";
+
+  var entry = currentState.schedule[dayKey] || {work: false, blocks: []};
+  var blocks = (entry.work && entry.blocks) ? entry.blocks : [];
+
+  if (blocks.length === 0) {
+    addDayBlockEditorRow("08:00", "10:00");
+  } else {
+    blocks.forEach(function(b) {
+      addDayBlockEditorRow(b.start, b.end);
+    });
+  }
+
+  modal.classList.add('active');
+}
+
+function addDayBlockEditorRow(start, end) {
+  var container = document.getElementById("dayBlockEditorContainer");
+  if (!container) return;
+
+  var row = document.createElement("div");
+  row.className = "day-block-editor-row";
+
+  row.innerHTML = 
+    '<div class="time-input-group">' +
+      '<span class="time-label">Start</span>' +
+      '<input type="text" class="block-editor-start" value="' + (start || "08:00") + '" maxlength="5">' +
+    '</div>' +
+    '<span class="time-separator">→</span>' +
+    '<div class="time-input-group">' +
+      '<span class="time-label">End</span>' +
+      '<input type="text" class="block-editor-end" value="' + (end || "10:00") + '" maxlength="5">' +
+    '</div>' +
+    '<button class="block-editor-remove" title="Remove">×</button>';
+
+  container.appendChild(row);
+
+  row.querySelector('.block-editor-remove').addEventListener('click', function() {
+    row.remove();
   });
-  if (!valid) return;
+}
 
+async function saveDayBlockEditor() {
+  if (!editingDayKey) return;
+
+  var rows = document.querySelectorAll('.day-block-editor-row');
+  var blocks = [];
+  var timeRe = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+
+  for (var i = 0; i < rows.length; i++) {
+    var start = rows[i].querySelector('.block-editor-start').value.trim();
+    var end = rows[i].querySelector('.block-editor-end').value.trim();
+
+    if (!timeRe.test(start) || !timeRe.test(end)) {
+      showToast('Invalid time in block ' + (i+1), 'error');
+      return;
+    }
+
+    var p = start.split(':').map(Number);
+    var q = end.split(':').map(Number);
+    if (p[0]*60+p[1] >= q[0]*60+q[1]) {
+      showToast('End must be after start in block ' + (i+1), 'error');
+      return;
+    }
+
+    blocks.push({start: start, end: end});
+  }
+
+  var newSchedule = JSON.parse(JSON.stringify(currentState.schedule));
+  newSchedule[editingDayKey] = { work: blocks.length > 0, blocks: blocks };
+
+  try {
+    var resp = await sendMsg({type: "SAVE_CONFIG", schedule: newSchedule});
+    if (resp.state) {
+      currentState = resp.state;
+      renderSchedule();
+      updateUI(currentState);
+      closeModal('dayBlockEditorModal');
+      showToast('Schedule updated!', 'success');
+    }
+  } catch (e) {
+    showToast('Failed to save schedule', 'error');
+  }
+}
+
+async function saveSchedule() {
+  // In multi-block mode, schedule is saved per-day via the block editor
+  // This button now just saves the pay rate
   var rate = parseFloat(document.getElementById("rateInput").value);
   if (isNaN(rate) || rate <= 0) { 
     showToast('Enter a valid pay rate.', 'error'); 
@@ -1702,15 +2236,15 @@ async function saveSchedule() {
   }
 
   try {
-    var resp = await sendMsg({type:"SAVE_CONFIG", schedule: newSchedule, staticMinRate: rate});
+    var resp = await sendMsg({type:"SAVE_CONFIG", staticMinRate: rate});
     if (resp.state) { 
       currentState = resp.state; 
       closeModal('scheduleModal'); 
       updateUI(currentState);
-      showToast('Schedule saved!', 'success');
+      showToast('Pay rate saved!', 'success');
     }
   } catch (e) {
-    showToast('Failed to save schedule', 'error');
+    showToast('Failed to save pay rate', 'error');
   }
 }
 
@@ -1730,8 +2264,6 @@ function renderSettings() {
   if (elLocal) elLocal.value = String(currentState.localTzOffset || -6);
   if (elCompany) elCompany.value = String(currentState.companyTzOffset || -4);
   if (elRate) elRate.value = currentState.staticMinRate;
-  // Don't overwrite fxRate input - let user edit it freely
-  // Only set initial value if empty
   if (elFx && !elFx.value) elFx.value = currentState.exchangeRate;
   if (elCurrency) elCurrency.value = currentState.currencyDisplay || "both";
 
@@ -1741,58 +2273,25 @@ function renderSettings() {
   sched.innerHTML = "";
   var header = document.createElement("div");
   header.className = "sched-row sched-header";
-  header.innerHTML = '<label style="width:36px">Day</label><span style="width:20px;text-align:center">On</span><span style="width:60px;text-align:center">Start</span><span style="width:60px;text-align:center">End</span>';
+  header.innerHTML = '<label style="width:36px">Day</label><span style="width:20px;text-align:center">On</span><span style="flex:1;text-align:center">Blocks</span>';
   sched.appendChild(header);
 
   DAY_NAMES.forEach(function(name, i) {
     var key = String(i);
-    var entry = currentState.schedule[key] || {work:false, start:"", end:""};
+    var entry = currentState.schedule[key] || {work:false, blocks:[]};
     var row = document.createElement("div");
     row.className = "sched-row";
-    row.innerHTML = '<label>' + name + '</label><input type="checkbox" class="sett-work" data-key="' + key + '"' + (entry.work?" checked":"") + '><input type="text" class="sett-start" data-key="' + key + '" value="' + entry.start + '" placeholder="HH:MM" maxlength="5"' + (entry.work?"":" disabled") + '><input type="text" class="sett-end" data-key="' + key + '" value="' + entry.end + '" placeholder="HH:MM" maxlength="5"' + (entry.work?"":" disabled") + '>';
-    sched.appendChild(row);
-  });
 
-  sched.querySelectorAll('.sett-work').forEach(function(cb) {
-    cb.addEventListener('change', function() {
-      var key = this.dataset.key;
-      var start = sched.querySelector('.sett-start[data-key="' + key + '"]');
-      var end = sched.querySelector('.sett-end[data-key="' + key + '"]');
-      if (start) start.disabled = !this.checked;
-      if (end) end.disabled = !this.checked;
-    });
+    var blocksText = (entry.work && entry.blocks && entry.blocks.length > 0) 
+      ? entry.blocks.map(function(b) { return b.start + '–' + b.end; }).join(', ')
+      : '—';
+
+    row.innerHTML = '<label>' + name + '</label><input type="checkbox" class="sett-work" data-key="' + key + '"' + (entry.work?" checked":"") + ' disabled><span style="flex:1;font-size:11px;color:var(--muted);padding-left:8px;">' + blocksText + '</span>';
+    sched.appendChild(row);
   });
 }
 
 async function saveSettings() {
-  var newSchedule = {};
-  var workEls = document.querySelectorAll(".sett-work");
-  var startEls = document.querySelectorAll(".sett-start");
-  var endEls = document.querySelectorAll(".sett-end");
-  var valid = true;
-
-  workEls.forEach(function(el, i) {
-    var key = el.dataset.key;
-    var work = el.checked;
-    var start = startEls[i].value.trim();
-    var end = endEls[i].value.trim();
-    if (work) {
-      var timeRe = /^([01]?\d|2[0-3]):([0-5]\d)$/;
-      if (!timeRe.test(start) || !timeRe.test(end)) {
-        showToast('Invalid time for ' + DAY_NAMES[i] + '. Use HH:MM.', 'error');
-        valid = false; return;
-      }
-      var p = start.split(":").map(Number);
-      var q = end.split(":").map(Number);
-      if (p[0]*60+p[1] >= q[0]*60+q[1]) {
-        showToast('Start must be before end for ' + DAY_NAMES[i] + '.', 'error');
-        valid = false; return;
-      }
-    }
-    newSchedule[key] = {work: work, start: start, end: end};
-  });
-  if (!valid) return;
-
   var rate = parseFloat(document.getElementById("settingsRate").value);
   var fx = parseFloat(document.getElementById("settingsFx").value);
   var localTz = parseFloat(document.getElementById("localTzSelect").value);
@@ -1807,7 +2306,6 @@ async function saveSettings() {
   try {
     var resp = await sendMsg({
       type: "SAVE_CONFIG", 
-      schedule: newSchedule, 
       staticMinRate: rate, 
       exchangeRate: fx, 
       localTzOffset: localTz, 
@@ -1816,7 +2314,6 @@ async function saveSettings() {
     });
     if (resp.state) { 
       currentState = resp.state; 
-      // Sync the earnings modal input too (only if not currently focused)
       var fxRate = document.getElementById("fxRate");
       if (fxRate && document.activeElement !== fxRate) fxRate.value = currentState.exchangeRate;
       closeModal('settingsModal'); 
@@ -1860,6 +2357,12 @@ document.addEventListener('DOMContentLoaded', function() {
   document.getElementById('btnScheduleIcon').addEventListener('click', function() { openModal('scheduleModal'); });
   document.getElementById('btnSettingsIcon').addEventListener('click', function() { openModal('settingsModal'); });
 
+  // Today schedule button
+  var todaySchedBtn = document.getElementById('todayScheduleBtn');
+  if (todaySchedBtn) {
+    todaySchedBtn.addEventListener('click', function() { openModal('todayScheduleModal'); });
+  }
+
   // Workshift buttons
   document.getElementById("btnBeginWorkshift").addEventListener("click", function() {
     doAction("BEGIN_WORKSHIFT").then(function(state) {
@@ -1896,14 +2399,13 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!val) { val = "06:00"; }
     var parts = val.split(':').map(Number);
     var totalMin = parts[0] * 60 + parts[1] + deltaMinutes;
-    // Wrap around 24h
     totalMin = ((totalMin % 1440) + 1440) % 1440;
     var h = Math.floor(totalMin / 60);
     var m = totalMin % 60;
     input.value = pad2(h) + ':' + pad2(m);
   }
 
-  // Time control buttons
+  // Time control buttons for add call
   document.getElementById("btnStartDown").addEventListener("click", function() {
     adjustTime("addCallStart", -30);
   });
@@ -1923,7 +2425,6 @@ document.addEventListener('DOMContentLoaded', function() {
     var end = document.getElementById("addCallEnd").value;
     if (selectedDateKey) {
       addCall(selectedDateKey, start, end);
-      // Reset to defaults after adding
       document.getElementById("addCallStart").value = "06:00";
       document.getElementById("addCallEnd").value = "07:00";
     }
@@ -1935,6 +2436,37 @@ document.addEventListener('DOMContentLoaded', function() {
       refreshDayEarnings(selectedDateKey);
     }
   });
+
+  // Today schedule modal buttons
+  var btnAddTodayBlock = document.getElementById("btnAddTodayBlock");
+  if (btnAddTodayBlock) {
+    btnAddTodayBlock.addEventListener('click', function() {
+      addTodayBlockRow("08:00", "10:00");
+    });
+  }
+
+  var btnSaveTodaySchedule = document.getElementById("btnSaveTodaySchedule");
+  if (btnSaveTodaySchedule) {
+    btnSaveTodaySchedule.addEventListener('click', saveTodaySchedule);
+  }
+
+  var btnClearTodayOverride = document.getElementById("btnClearTodayOverride");
+  if (btnClearTodayOverride) {
+    btnClearTodayOverride.addEventListener('click', clearTodayOverride);
+  }
+
+  // Day block editor buttons
+  var btnAddDayBlock = document.getElementById("btnAddDayBlock");
+  if (btnAddDayBlock) {
+    btnAddDayBlock.addEventListener('click', function() {
+      addDayBlockEditorRow("08:00", "10:00");
+    });
+  }
+
+  var btnSaveDayBlocks = document.getElementById("btnSaveDayBlocks");
+  if (btnSaveDayBlocks) {
+    btnSaveDayBlocks.addEventListener('click', saveDayBlockEditor);
+  }
 
   // Modal actions
   document.getElementById("btnSaveFx").addEventListener("click", saveFx);
@@ -1980,10 +2512,13 @@ document.addEventListener('DOMContentLoaded', function() {
       if (resp.state) {
         currentState = resp.state;
         updateUI(resp.state);
-        // Re-render earnings modal if open
         var earnModal = document.getElementById("earningsModal");
         if (earnModal && earnModal.classList.contains("active")) {
           renderEarnings();
+        }
+        var histModal = document.getElementById("historyModal");
+        if (histModal && histModal.classList.contains("active")) {
+          renderMonthTotals(calendarDate.getFullYear(), calendarDate.getMonth());
         }
       }
     } catch (e) {
@@ -1995,15 +2530,14 @@ document.addEventListener('DOMContentLoaded', function() {
 })();
 
 
-
 --------------------------------------------------------------------------------
 FILE: manifest.json
 --------------------------------------------------------------------------------
 {
   "manifest_version": 3,
   "name": "WFM Call Timer",
-  "version": "2.4.0",
-  "description": "Track call time and earnings for LSA InterpreCloud",
+  "version": "2.6.0",
+  "description": "Track call time and earnings for LSA InterpreCloud with multi-block schedules",
   "permissions": ["storage", "activeTab", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {
@@ -2053,6 +2587,7 @@ FILE: manifest.json
   ]
 }
 
+
 --------------------------------------------------------------------------------
 FILE: popup.html
 --------------------------------------------------------------------------------
@@ -2081,6 +2616,12 @@ FILE: popup.html
       --text: #f8fafc;
       --muted: #a8b2d1;
       --shadow: rgba(0, 0, 0, 0.4);
+      --cal-red: #ef4444;
+      --cal-red-bg: rgba(239, 68, 68, 0.15);
+      --cal-yellow: #fbbf24;
+      --cal-yellow-bg: rgba(251, 191, 36, 0.15);
+      --cal-green: #22c55e;
+      --cal-green-bg: rgba(34, 197, 94, 0.15);
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -2131,7 +2672,6 @@ FILE: popup.html
     }
     .icon-btn:hover .tooltip { opacity: 1; }
 
-    /* ===== WORKSHIFT BAR ===== */
     .workshift-bar {
       display: flex;
       align-items: center;
@@ -2147,65 +2687,29 @@ FILE: popup.html
     .workshift-bar.ended {
       background: linear-gradient(90deg, rgba(239,68,68,0.15), rgba(239,68,68,0.05));
     }
-    .workshift-info {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
+    .workshift-info { display: flex; align-items: center; gap: 8px; }
     .workshift-dot {
       width: 10px; height: 10px; border-radius: 50%;
       background: var(--green-dark);
       box-shadow: 0 0 10px var(--green-dark);
       animation: pulse-dot 2s infinite;
     }
-    .workshift-bar.inactive .workshift-dot {
-      background: var(--muted);
-      box-shadow: none;
-      animation: none;
-    }
-    .workshift-bar.ended .workshift-dot {
-      background: var(--red);
-      box-shadow: 0 0 10px var(--red);
-      animation: none;
-    }
-    @keyframes pulse-dot {
-      0%, 100% { transform: scale(1); opacity: 1; }
-      50% { transform: scale(1.2); opacity: 0.7; }
-    }
-    .workshift-text {
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--green);
-      letter-spacing: 0.5px;
-    }
+    .workshift-bar.inactive .workshift-dot { background: var(--muted); box-shadow: none; animation: none; }
+    .workshift-bar.ended .workshift-dot { background: var(--red); box-shadow: 0 0 10px var(--red); animation: none; }
+    @keyframes pulse-dot { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.2); opacity: 0.7; } }
+    .workshift-text { font-size: 12px; font-weight: 700; color: var(--green); letter-spacing: 0.5px; }
     .workshift-bar.inactive .workshift-text { color: var(--muted); }
     .workshift-bar.ended .workshift-text { color: var(--red); }
-    .workshift-sub {
-      font-size: 10px;
-      color: var(--muted);
-      margin-top: 2px;
-    }
+    .workshift-sub { font-size: 10px; color: var(--muted); margin-top: 2px; }
     .btn-workshift {
-      border: none; border-radius: 8px;
-      padding: 8px 16px;
-      font-size: 12px; font-weight: 700;
-      cursor: pointer; transition: all 0.2s ease;
+      border: none; border-radius: 8px; padding: 8px 16px;
+      font-size: 12px; font-weight: 700; cursor: pointer; transition: all 0.2s ease;
     }
     .btn-workshift:hover { transform: scale(1.05); }
     .btn-workshift:active { transform: scale(0.95); }
-    .btn-begin {
-      background: var(--green-dark);
-      color: #fff;
-      box-shadow: 0 0 12px rgba(34,197,94,0.3);
-    }
-    .btn-begin:hover {
-      background: var(--green-hover);
-      box-shadow: 0 0 16px rgba(34,197,94,0.5);
-    }
-    .btn-end {
-      background: var(--red);
-      color: #fff;
-    }
+    .btn-begin { background: var(--green-dark); color: #fff; box-shadow: 0 0 12px rgba(34,197,94,0.3); }
+    .btn-begin:hover { background: var(--green-hover); box-shadow: 0 0 16px rgba(34,197,94,0.5); }
+    .btn-end { background: var(--red); color: #fff; }
     .btn-end:hover { background: var(--red-hover); }
 
     .timezone-bar {
@@ -2224,16 +2728,25 @@ FILE: popup.html
       padding: 8px 16px; font-size: 11px; color: var(--muted);
       border-bottom: 1px solid var(--border);
       background: rgba(10, 25, 47, 0.5);
+      flex-wrap: wrap; gap: 6px;
     }
-    .schedule-info { display: flex; align-items: center; gap: 6px; }
+    .schedule-info { display: flex; align-items: center; gap: 6px; flex: 1; }
     .schedule-dot { width: 6px; height: 6px; border-radius: 50%; }
     .ot-btn {
       background: var(--amber); color: var(--bg); border: none;
       padding: 3px 10px; border-radius: 4px; font-size: 10px;
       font-weight: 700; cursor: pointer; transition: all 0.2s;
+      flex-shrink: 0;
     }
     .ot-btn:hover { background: var(--amber-hover); transform: scale(1.05); }
     .ot-btn:active { transform: scale(0.95); }
+    .today-sched-btn {
+      background: var(--surface); color: var(--accent); border: 1px solid var(--border);
+      padding: 3px 10px; border-radius: 4px; font-size: 10px;
+      font-weight: 700; cursor: pointer; transition: all 0.2s;
+      flex-shrink: 0;
+    }
+    .today-sched-btn:hover { background: var(--border); border-color: var(--accent); }
     .status-row {
       display: flex; align-items: center; justify-content: center;
       gap: 8px; padding: 12px 0 6px;
@@ -2338,7 +2851,7 @@ FILE: popup.html
     }
     .modal-close:hover { background: rgba(255,255,255,0.1); color: var(--text); }
 
-    /* ===== CALENDAR / HISTORY MODAL (NEW) ===== */
+    /* ===== CALENDAR ===== */
     .calendar-nav {
       display: flex; align-items: center; justify-content: space-between;
       margin-bottom: 16px; padding: 0 4px;
@@ -2350,9 +2863,7 @@ FILE: popup.html
       transition: all 0.2s;
     }
     .cal-nav-btn:hover { background: var(--border); }
-    .cal-month-year {
-      font-size: 16px; font-weight: 700; color: var(--text);
-    }
+    .cal-month-year { font-size: 16px; font-weight: 700; color: var(--text); }
     .calendar-grid {
       display: grid;
       grid-template-columns: repeat(7, 1fr);
@@ -2361,8 +2872,7 @@ FILE: popup.html
     }
     .cal-day-header {
       text-align: center; font-size: 10px; color: var(--muted);
-      font-weight: 700; text-transform: uppercase;
-      padding: 6px 0;
+      font-weight: 700; text-transform: uppercase; padding: 6px 0;
     }
     .cal-day {
       aspect-ratio: 1;
@@ -2383,19 +2893,72 @@ FILE: popup.html
     .cal-day.selected .cal-day-num { color: var(--bg); font-weight: 700; }
     .cal-day.selected .cal-day-earnings { color: var(--bg); }
     .cal-day.other-month { opacity: 0.4; }
+
+    .cal-day.cal-day-red { background: var(--cal-red-bg); border-color: var(--cal-red); }
+    .cal-day.cal-day-red .cal-day-num { color: var(--cal-red); }
+    .cal-day.cal-day-yellow { background: var(--cal-yellow-bg); border-color: var(--cal-yellow); }
+    .cal-day.cal-day-yellow .cal-day-num { color: var(--cal-yellow); }
+    .cal-day.cal-day-green { background: var(--cal-green-bg); border-color: var(--cal-green); }
+    .cal-day.cal-day-green .cal-day-num { color: var(--cal-green); }
+
     .cal-day-num { font-size: 13px; font-weight: 600; color: var(--text); }
-    .cal-day-earnings {
-      font-size: 9px; color: var(--green); font-weight: 700;
-      margin-top: 2px;
-    }
-    .cal-day-calls {
-      font-size: 8px; color: var(--muted);
-    }
+    .cal-day-earnings { font-size: 9px; color: var(--green); font-weight: 700; margin-top: 2px; }
+    .cal-day-calls { font-size: 8px; color: var(--muted); }
     .cal-day-dot {
       width: 4px; height: 4px; border-radius: 50%;
       background: var(--green); position: absolute;
       top: 4px; right: 4px;
     }
+
+    .calendar-legend {
+      display: flex; justify-content: center; gap: 16px;
+      margin-bottom: 12px; font-size: 10px;
+    }
+    .legend-item { display: flex; align-items: center; gap: 4px; color: var(--muted); }
+    .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+    .legend-dot.red { background: var(--cal-red); }
+    .legend-dot.yellow { background: var(--cal-yellow); }
+    .legend-dot.green { background: var(--cal-green); }
+
+    .month-totals-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-top: 16px;
+      display: none;
+    }
+    .month-totals-header {
+      font-size: 12px; font-weight: 700; color: var(--accent);
+      text-transform: uppercase; letter-spacing: 0.5px;
+      margin-bottom: 12px; text-align: center;
+      border-bottom: 1px solid var(--border); padding-bottom: 8px;
+    }
+    .month-totals-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    .month-total-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 8px;
+      text-align: center;
+    }
+    .month-total-label {
+      font-size: 10px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .month-total-value {
+      font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums;
+    }
+    .month-total-usd { color: var(--green); }
+    .month-total-mxn { color: var(--accent); }
+    .month-total-calls { color: var(--text); }
+    .month-total-dur { color: var(--amber); }
+
     .day-detail-panel {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -2405,11 +2968,16 @@ FILE: popup.html
     }
     .day-detail-header {
       display: flex; justify-content: space-between; align-items: center;
-      margin-bottom: 12px;
+      margin-bottom: 12px; flex-wrap: wrap; gap: 8px;
     }
-    .day-detail-title {
-      font-size: 14px; font-weight: 700; color: var(--text);
+    .day-detail-title { font-size: 14px; font-weight: 700; color: var(--text); }
+    .day-hours-badge {
+      font-size: 10px; font-weight: 700; padding: 4px 10px;
+      border-radius: 12px; display: none;
     }
+    .day-hours-red { background: var(--cal-red-bg); color: var(--cal-red); border: 1px solid var(--cal-red); }
+    .day-hours-yellow { background: var(--cal-yellow-bg); color: var(--cal-yellow); border: 1px solid var(--cal-yellow); }
+    .day-hours-green { background: var(--cal-green-bg); color: var(--cal-green); border: 1px solid var(--cal-green); }
     .day-detail-stats {
       display: flex; gap: 16px; margin-bottom: 12px;
     }
@@ -2423,10 +2991,7 @@ FILE: popup.html
     }
     .day-stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; }
     .day-stat-value { font-size: 16px; font-weight: 700; color: var(--green); }
-    .day-calls-list {
-      max-height: 200px;
-      overflow-y: auto;
-    }
+    .day-calls-list { max-height: 200px; overflow-y: auto; }
     .day-call-item {
       display: flex; justify-content: space-between;
       align-items: center;
@@ -2438,9 +3003,7 @@ FILE: popup.html
     .day-call-time { color: var(--muted); font-family: monospace; }
     .day-call-dur { color: var(--text); font-weight: 600; }
     .day-call-val { color: var(--green); font-weight: 700; }
-    .day-call-actions {
-      display: flex; gap: 4px;
-    }
+    .day-call-actions { display: flex; gap: 4px; }
     .call-action-btn {
       background: none; border: none;
       color: var(--muted); cursor: pointer;
@@ -2449,92 +3012,124 @@ FILE: popup.html
     }
     .call-action-btn:hover { background: rgba(255,255,255,0.1); color: var(--text); }
     .call-action-btn.delete:hover { color: var(--red); }
-    .add-call-form {
-      display: flex; gap: 8px; align-items: center;
-      margin-top: 12px; padding-top: 12px;
-      border-top: 1px solid var(--border);
-    }
     .add-call-section {
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px solid var(--border);
+      margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
     }
-    .add-call-label {
-      font-size: 11px;
-      color: var(--muted);
-      margin-bottom: 8px;
-    }
+    .add-call-label { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
     .time-input-row {
-      display: flex;
-      align-items: flex-end;
-      gap: 6px;
-      flex-wrap: nowrap;
-      justify-content: center;
+      display: flex; align-items: flex-end; gap: 6px;
+      flex-wrap: nowrap; justify-content: center;
     }
     .time-input-group {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 4px;
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
     }
     .time-label {
-      font-size: 9px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      font-size: 9px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.5px;
     }
-    .time-control {
-      display: flex;
-      align-items: center;
-      gap: 2px;
-    }
+    .time-control { display: flex; align-items: center; gap: 2px; }
     .time-control input {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 5px 2px;
-      border-radius: 6px;
-      font-size: 12px;
-      font-weight: 600;
-      width: 48px;
-      text-align: center;
-      font-family: 'Consolas', monospace;
-      cursor: default;
-      flex-shrink: 0;
+      background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); padding: 5px 2px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; width: 48px;
+      text-align: center; font-family: 'Consolas', monospace;
+      cursor: default; flex-shrink: 0;
     }
     .time-btn {
-      background: var(--surface);
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); width: 22px; height: 26px;
+      border-radius: 6px; font-size: 13px; font-weight: 700;
+      cursor: pointer; display: flex; align-items: center;
+      justify-content: center; transition: all 0.15s ease;
+      user-select: none; flex-shrink: 0; padding: 0;
+    }
+    .time-btn:hover { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+    .time-btn:active { transform: scale(0.9); }
+    .time-separator { color: var(--muted); font-size: 14px; font-weight: 700; padding-bottom: 6px; }
+    .add-call-btn { flex-shrink: 0; margin-left: 4px; padding: 8px 14px; white-space: nowrap; }
+
+    /* ===== TODAY SCHEDULE MODAL ===== */
+    .today-blocks-container { margin-bottom: 16px; }
+    .today-block-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 10px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 10px;
+      margin-bottom: 8px;
+    }
+    .today-block-time { display: flex; align-items: center; gap: 8px; flex: 1; }
+    .today-block-row input {
+      background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); padding: 6px 4px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; width: 52px;
+      text-align: center; font-family: 'Consolas', monospace;
+    }
+    .today-block-row input:focus { border-color: var(--accent); outline: none; }
+    .today-block-remove {
+      background: var(--red); color: #fff; border: none;
+      width: 24px; height: 24px; border-radius: 6px;
+      font-size: 16px; font-weight: 700; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s; flex-shrink: 0;
+    }
+    .today-block-remove:hover { background: var(--red-hover); transform: scale(1.1); }
+    .today-empty-hint {
+      text-align: center; color: var(--muted); font-size: 12px;
+      padding: 20px; font-style: italic;
+    }
+    .today-schedule-actions {
+      display: flex; gap: 8px; margin-bottom: 16px;
+    }
+    .recurring-checkbox-row {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: var(--muted);
+      margin-bottom: 16px; padding: 10px;
+      background: var(--surface); border-radius: 8px;
       border: 1px solid var(--border);
-      color: var(--text);
-      width: 22px;
-      height: 26px;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 700;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.15s ease;
-      user-select: none;
-      flex-shrink: 0;
-      padding: 0;
     }
-    .time-btn:hover {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: var(--bg);
+    .recurring-checkbox-row input[type="checkbox"] {
+      width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer;
     }
-    .time-btn:active {
-      transform: scale(0.9);
+    .recurring-checkbox-row label { cursor: pointer; }
+
+    /* ===== DAY BLOCK EDITOR MODAL ===== */
+    .day-block-editor-container { margin-bottom: 16px; }
+    .day-block-editor-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 8px;
+      margin-bottom: 6px;
     }
-    .time-separator {
-      color: var(--muted);
-      font-size: 14px;
-      font-weight: 700;
-      padding-bottom: 6px;
+    .day-block-editor-row input {
+      background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); padding: 5px 4px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; width: 52px;
+      text-align: center; font-family: 'Consolas', monospace;
     }
-    .add-call-form label { font-size: 11px; color: var(--muted); }
+    .day-block-editor-row input:focus { border-color: var(--accent); outline: none; }
+    .block-editor-remove {
+      background: var(--red); color: #fff; border: none;
+      width: 22px; height: 22px; border-radius: 5px;
+      font-size: 14px; font-weight: 700; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s; flex-shrink: 0; margin-left: auto;
+    }
+    .block-editor-remove:hover { background: var(--red-hover); }
+    .block-chip {
+      display: inline-block; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 2px 6px; font-size: 10px; color: var(--accent);
+      font-weight: 600; margin-right: 4px;
+    }
+    .block-chip.empty { color: var(--muted); border-style: dashed; }
+    .btn-edit-blocks {
+      background: transparent; border: 1px solid var(--border);
+      color: var(--accent); padding: 2px 6px; border-radius: 4px;
+      font-size: 11px; cursor: pointer; transition: all 0.2s;
+    }
+    .btn-edit-blocks:hover { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+    .multi-block-row { align-items: flex-start; padding: 6px 0; }
+    .multi-block-row label { padding-top: 4px; }
+    .sched-blocks { flex: 1; display: flex; flex-wrap: wrap; gap: 4px; padding-top: 2px; }
 
     /* ===== SETTINGS ===== */
     .settings-section { 
@@ -2646,12 +3241,6 @@ FILE: popup.html
     .toast.success { border-color: var(--green); }
     .toast.error { border-color: var(--red); }
     .toast.info { border-color: var(--accent); }
-    .add-call-btn {
-      flex-shrink: 0;
-      margin-left: 4px;
-      padding: 8px 14px;
-      white-space: nowrap;
-    }
   </style>
 </head>
 <body>
@@ -2712,6 +3301,7 @@ FILE: popup.html
         <span id="scheduleText">Loading...</span>
       </div>
       <button id="btnOT" class="ot-btn" style="display:none;">Enable OT</button>
+      <button id="todayScheduleBtn" class="today-sched-btn" style="display:none;">📝 Today</button>
     </div>
 
     <div class="status-row">
@@ -2757,7 +3347,7 @@ FILE: popup.html
     </div>
   </div>
 
-  <!-- HISTORY / CALENDAR MODAL (NEW) -->
+  <!-- HISTORY / CALENDAR MODAL -->
   <div class="modal-overlay" id="historyModal">
     <div class="modal-content">
       <div class="modal-header">
@@ -2766,15 +3356,51 @@ FILE: popup.html
       </div>
       <div class="calendar-nav">
         <button class="cal-nav-btn" id="calPrevMonth">◀ Prev</button>
-        <span class="cal-month-year" id="calMonthYear">June 2026</span>
+        <span class="cal-month-year" id="calMonthYear">July 2026</span>
         <button class="cal-nav-btn" id="calNextMonth">Next ▶</button>
       </div>
-      <div class="calendar-grid" id="calendarGrid">
-        <!-- Calendar injected by JS -->
+
+      <!-- Calendar Legend -->
+      <div class="calendar-legend">
+        <div class="legend-item">
+          <span class="legend-dot red"></span> Light (&lt;3 hrs)
+        </div>
+        <div class="legend-item">
+          <span class="legend-dot yellow"></span> Moderate (3–5 hrs)
+        </div>
+        <div class="legend-item">
+          <span class="legend-dot green"></span> Heavy (5+ hrs)
+        </div>
       </div>
+
+      <div class="calendar-grid" id="calendarGrid"></div>
+
+      <div class="month-totals-panel" id="monthTotalsPanel">
+        <div class="month-totals-header">📅 Month Summary</div>
+        <div class="month-totals-grid">
+          <div class="month-total-card">
+            <div class="month-total-label">Total USD</div>
+            <div class="month-total-value month-total-usd" id="monthTotalUSD">$0.00</div>
+          </div>
+          <div class="month-total-card">
+            <div class="month-total-label">Total MXN</div>
+            <div class="month-total-value month-total-mxn" id="monthTotalMXN">$0.00</div>
+          </div>
+          <div class="month-total-card">
+            <div class="month-total-label">Total Calls</div>
+            <div class="month-total-value month-total-calls" id="monthTotalCalls">0</div>
+          </div>
+          <div class="month-total-card">
+            <div class="month-total-label">Total Duration</div>
+            <div class="month-total-value month-total-dur" id="monthTotalDuration">0:00</div>
+          </div>
+        </div>
+      </div>
+
       <div class="day-detail-panel" id="dayDetailPanel" style="display:none;">
         <div class="day-detail-header">
-          <span class="day-detail-title" id="dayDetailTitle">June 15, 2026</span>
+          <span class="day-detail-title" id="dayDetailTitle">July 16, 2026</span>
+          <span class="day-hours-badge" id="dayHoursBadge">0.0 hrs</span>
           <span style="font-size:11px;color:var(--muted);" id="dayDetailTotal"></span>
         </div>
         <div class="day-detail-stats">
@@ -2822,6 +3448,61 @@ FILE: popup.html
     </div>
   </div>
 
+  <!-- TODAY SCHEDULE MODAL (NEW) -->
+  <div class="modal-overlay" id="todayScheduleModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>📝 Today's Schedule</h3>
+        <button class="modal-close" data-modal="todayScheduleModal">×</button>
+      </div>
+      <p class="settings-desc" style="margin-bottom:12px;">
+        Set your work blocks for today. Auto-detection will only be active during these times. 
+        Perfect for overtime days or custom schedules.
+      </p>
+
+      <div class="today-blocks-container" id="todayBlocksContainer">
+        <!-- Blocks injected by JS -->
+      </div>
+
+      <div class="today-schedule-actions">
+        <button class="btn btn-small btn-blue" id="btnAddTodayBlock">➕ Add Block</button>
+      </div>
+
+      <div class="recurring-checkbox-row">
+        <input type="checkbox" id="applyToRecurring">
+        <label for="applyToRecurring">Also save this as my recurring schedule for this day of the week</label>
+      </div>
+
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-green btn-full" id="btnSaveTodaySchedule">💾 Save Today's Schedule</button>
+        <button class="btn btn-red btn-full" id="btnClearTodayOverride" style="margin-top:8px;">🗑 Clear Override</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DAY BLOCK EDITOR MODAL (NEW) -->
+  <div class="modal-overlay" id="dayBlockEditorModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="dayBlockEditorTitle">Edit Work Blocks</h3>
+        <button class="modal-close" data-modal="dayBlockEditorModal">×</button>
+      </div>
+      <p class="settings-desc" style="margin-bottom:12px;">
+        Add multiple work blocks with breaks in between. Example: 08:00→10:00, 12:00→14:00, 16:00→19:00
+      </p>
+
+      <div class="day-block-editor-container" id="dayBlockEditorContainer">
+        <!-- Blocks injected by JS -->
+      </div>
+
+      <div style="display:flex;gap:8px;margin-bottom:16px;">
+        <button class="btn btn-small btn-blue" id="btnAddDayBlock">➕ Add Block</button>
+      </div>
+
+      <button class="btn btn-green btn-full" id="btnSaveDayBlocks">💾 Save Blocks</button>
+    </div>
+  </div>
+
   <!-- EARNINGS MODAL -->
   <div class="modal-overlay" id="earningsModal">
     <div class="modal-content">
@@ -2861,12 +3542,15 @@ FILE: popup.html
         <h3>📅 Weekly Schedule</h3>
         <button class="modal-close" data-modal="scheduleModal">×</button>
       </div>
+      <p class="settings-desc" style="margin-bottom:12px;">
+        Click ✎ to edit work blocks for each day. Add multiple blocks with breaks between them.
+      </p>
       <div id="scheduleTable"></div>
       <div style="margin:14px 0 10px; font-size:12px; display:flex; align-items:center; gap:8px;">
         <label>💰 Pay Rate (USD/min):</label>
         <input type="number" id="rateInput" value="0.14" step="0.01" min="0.01" style="width:70px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;text-align:center;font-size:13px;">
       </div>
-      <button class="btn btn-blue btn-full" id="btnSaveSchedule">💾 Save Schedule</button>
+      <button class="btn btn-blue btn-full" id="btnSaveSchedule">💾 Save Pay Rate</button>
     </div>
   </div>
 
@@ -2923,8 +3607,8 @@ FILE: popup.html
         <p class="settings-desc">Choose which currency to display on the main screen, calendar, and call history.</p>
       </div>
       <div class="settings-section">
-        <h4>📅 Weekly Schedule</h4>
-        <p class="settings-desc">Check days you work and set shift hours (HH:MM format).</p>
+        <h4>📅 Weekly Schedule Overview</h4>
+        <p class="settings-desc">View your current schedule. Edit via the Schedule button in the main screen.</p>
         <div id="settingsSchedule"></div>
       </div>
       <button class="btn btn-blue btn-full" id="btnSaveSettings">💾 Save All Settings</button>
@@ -2939,41 +3623,49 @@ FILE: popup.html
 </html>
 
 
-
 --------------------------------------------------------------------------------
 FILE: README.txt
 --------------------------------------------------------------------------------
-WFM Call Timer v2.5 — History & Calendar
-========================================
+WFM Call Timer v2.6 — Multi-Block Schedules & Calendar Color Coding
+====================================================================
 
-✅ NEW FEATURES:
+✅ NEW FEATURES IN v2.6:
 
-1. REMOVED: "Shift Ended" overlay that blocked the UI
-   → You can now view history and earnings even after shift ends
+1. 📅 MULTI-BLOCK DAILY SCHEDULES
+   → Each day can now have MULTIPLE work blocks with breaks in between
+   → Example: 08:00–10:00, 12:00–14:00, 16:00–19:00
+   → Auto-detection only runs during work blocks
 
-2. ADDED: 📊 History button (top bar)
-   → Calendar view showing all days with recorded calls
-   → Green dots indicate days with earnings
-   → Click any day to see detailed call list
+2. 📝 TODAY'S SCHEDULE OVERRIDE
+   → New "📝 Today" button in the schedule bar
+   → Set custom work blocks for TODAY only (perfect for overtime days)
+   → Option to also save as recurring schedule for that day of week
+   → Clears automatically at midnight
 
-3. ADDED: Call editing in History
-   → Delete individual calls (🗑 button)
-   → Add missing calls with start/end times
-   → Useful when computer didn't record a call
+3. 🎨 CALENDAR COLOR CODING (like your reference image!)
+   → 🔴 RED days = Light work (< 3 hours)
+   → 🟡 YELLOW days = Moderate work (3–5 hours)  
+   → 🟢 GREEN days = Heavy work (5+ hours)
+   → Color legend shown above calendar for easy reference
+   → Hours badge shown in day detail panel too
 
-4. ADDED: Workshift gating (v2.4 carryover)
-   → Press "Begin Workshift" to enable auto-detection
-   → Press "End Workshift" to stop all detection
-   → App won't start timer just from opening job homepage
+4. 🔄 FULL DATA MIGRATION
+   → Your existing v2.5 history, calls, and earnings are PRESERVED
+   → Old single-block schedule format auto-converts to new multi-block format
+   → No data loss when updating
 
 📁 Files:
-  manifest.json    v2.5.0
-  popup.html       UI with calendar modal
-  popup.js         All logic including calendar
-  background.js    History storage API
-  detector.js      Content script (unchanged)
+  manifest.json    v2.6.0
+  popup.html       UI with calendar, today schedule, block editor
+  popup.js         All logic including multi-block schedules
+  background.js    Multi-block storage API + data migration
+  detector.js      Content script (minor compatibility update)
 
-⚠️ You still need your icons/ folder from old extension!
+⚠️ You still need your icons/ folder from the old extension!
 
-🚀 Deploy: Replace files in your extension folder, reload in chrome://extensions
+🚀 Deploy: Replace all files in your extension folder, reload in chrome://extensions
+
+🗑️ To clear old data and start fresh: 
+   → Click extension icon → right-click → "Inspect popup" → Console → 
+     chrome.storage.local.clear() → reload extension
 

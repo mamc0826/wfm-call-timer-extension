@@ -1,33 +1,42 @@
-WFM Call Timer v2.5 — History & Calendar
-========================================
+WFM Call Timer v2.6 — Multi-Block Schedules & Calendar Color Coding
+====================================================================
 
-✅ NEW FEATURES:
+✅ NEW FEATURES IN v2.6:
 
-1. REMOVED: "Shift Ended" overlay that blocked the UI
-   → You can now view history and earnings even after shift ends
+1. 📅 MULTI-BLOCK DAILY SCHEDULES
+   → Each day can now have MULTIPLE work blocks with breaks in between
+   → Example: 08:00–10:00, 12:00–14:00, 16:00–19:00
+   → Auto-detection only runs during work blocks
 
-2. ADDED: 📊 History button (top bar)
-   → Calendar view showing all days with recorded calls
-   → Green dots indicate days with earnings
-   → Click any day to see detailed call list
+2. 📝 TODAY'S SCHEDULE OVERRIDE
+   → New "📝 Today" button in the schedule bar
+   → Set custom work blocks for TODAY only (perfect for overtime days)
+   → Option to also save as recurring schedule for that day of week
+   → Clears automatically at midnight
 
-3. ADDED: Call editing in History
-   → Delete individual calls (🗑 button)
-   → Add missing calls with start/end times
-   → Useful when computer didn't record a call
+3. 🎨 CALENDAR COLOR CODING (like your reference image!)
+   → 🔴 RED days = Light work (< 3 hours)
+   → 🟡 YELLOW days = Moderate work (3–5 hours)  
+   → 🟢 GREEN days = Heavy work (5+ hours)
+   → Color legend shown above calendar for easy reference
+   → Hours badge shown in day detail panel too
 
-4. ADDED: Workshift gating (v2.4 carryover)
-   → Press "Begin Workshift" to enable auto-detection
-   → Press "End Workshift" to stop all detection
-   → App won't start timer just from opening job homepage
+4. 🔄 FULL DATA MIGRATION
+   → Your existing v2.5 history, calls, and earnings are PRESERVED
+   → Old single-block schedule format auto-converts to new multi-block format
+   → No data loss when updating
 
 📁 Files:
-  manifest.json    v2.5.0
-  popup.html       UI with calendar modal
-  popup.js         All logic including calendar
-  background.js    History storage API
-  detector.js      Content script (unchanged)
+  manifest.json    v2.6.0
+  popup.html       UI with calendar, today schedule, block editor
+  popup.js         All logic including multi-block schedules
+  background.js    Multi-block storage API + data migration
+  detector.js      Content script (minor compatibility update)
 
-⚠️ You still need your icons/ folder from old extension!
+⚠️ You still need your icons/ folder from the old extension!
 
-🚀 Deploy: Replace files in your extension folder, reload in chrome://extensions
+🚀 Deploy: Replace all files in your extension folder, reload in chrome://extensions
+
+🗑️ To clear old data and start fresh: 
+   → Click extension icon → right-click → "Inspect popup" → Console → 
+     chrome.storage.local.clear() → reload extension

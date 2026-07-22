@@ -1,15 +1,16 @@
-// WFM Call Timer - Background Service Worker v2.5
-// Added: Historical data storage, call editing, calendar support, currency preference
+// WFM Call Timer - Background Service Worker v2.6
+// Added: Multi-block daily schedules, today-only override, calendar color coding
+// Added: Data migration from v2.5 format
 
 const DEFAULTS = {
   schedule: {
-    "0": { work: false, start: "", end: "" },
-    "1": { work: true,  start: "08:00", end: "16:30" },
-    "2": { work: true,  start: "08:00", end: "16:30" },
-    "3": { work: false, start: "", end: "" },
-    "4": { work: false, start: "", end: "" },
-    "5": { work: true,  start: "08:00", end: "16:30" },
-    "6": { work: false, start: "", end: "" },
+    "0": { work: false, blocks: [] },
+    "1": { work: true,  blocks: [{start: "08:00", end: "16:30"}] },
+    "2": { work: true,  blocks: [{start: "08:00", end: "16:30"}] },
+    "3": { work: false, blocks: [] },
+    "4": { work: false, blocks: [] },
+    "5": { work: true,  blocks: [{start: "08:00", end: "16:30"}] },
+    "6": { work: false, blocks: [] },
   },
   exchangeRate: 17.50,
   staticMinRate: 0.14,
@@ -24,10 +25,12 @@ const DEFAULTS = {
   callStartMono: null,
   calls: [],
   todayDate: null,
-  // NEW: Currency display preference ("usd", "mxn", "both")
   currencyDisplay: "both",
-  // NEW: Historical data storage
-  history: {},  // Format: "2026-06-15": { calls: [...], totalDuration: 0, totalEarnings: 0 }
+  history: {},
+  // NEW: Today-only schedule override (cleared daily)
+  todayOverride: null,  // Format: { blocks: [{start:"08:00", end:"10:00"}, ...] }
+  // NEW: Version tracking for migrations
+  dataVersion: "2.6"
 };
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -43,21 +46,33 @@ function getDayKey() {
   return String(new Date().getDay());
 }
 
-function isWithinHours(entry) {
-  if (!entry || !entry.work) return false;
+function timeToMinutes(timeStr) {
+  const [h, m] = timeStr.split(":").map(Number);
+  return h * 60 + m;
+}
+
+function isWithinBlocks(blocks) {
+  if (!blocks || blocks.length === 0) return false;
   const now = new Date();
-  const [sh, sm] = entry.start.split(":").map(Number);
-  const [eh, em] = entry.end.split(":").map(Number);
   const nowMin = now.getHours() * 60 + now.getMinutes();
-  return (sh * 60 + sm) <= nowMin && nowMin <= (eh * 60 + em);
+  for (const block of blocks) {
+    const startMin = timeToMinutes(block.start);
+    const endMin = timeToMinutes(block.end);
+    if (startMin <= nowMin && nowMin <= endMin) return true;
+  }
+  return false;
 }
 
 function isTodayActive(state) {
+  // Check today override first
+  if (state.todayOverride && state.todayOverride.blocks && state.todayOverride.blocks.length > 0) {
+    return isWithinBlocks(state.todayOverride.blocks);
+  }
   const entry = state.schedule[getDayKey()];
   if (!entry) return false;
   if (state.otToday) return true;
   if (state.shiftEnded) return false;
-  return isWithinHours(entry);
+  return entry.work && isWithinBlocks(entry.blocks);
 }
 
 function totalDuration(state) {
@@ -71,11 +86,73 @@ function currentDuration(state) {
   return Math.floor((Date.now() - state.callStartMono) / 1000);
 }
 
+// ===== MIGRATION HELPERS =====
+function migrateSchedule(oldSchedule) {
+  // Convert old format {work, start, end} to new format {work, blocks: [{start, end}]}
+  const newSchedule = {};
+  for (let i = 0; i < 7; i++) {
+    const key = String(i);
+    const old = oldSchedule ? oldSchedule[key] : null;
+    if (!old) {
+      newSchedule[key] = { work: false, blocks: [] };
+      continue;
+    }
+    // Already in new format?
+    if (old.blocks && Array.isArray(old.blocks)) {
+      newSchedule[key] = { work: old.work, blocks: old.blocks };
+      continue;
+    }
+    // Old format: convert single block
+    if (old.work && old.start && old.end) {
+      newSchedule[key] = { work: true, blocks: [{start: old.start, end: old.end}] };
+    } else {
+      newSchedule[key] = { work: false, blocks: [] };
+    }
+  }
+  return newSchedule;
+}
+
+function migrateState(storedState) {
+  if (!storedState) return { ...DEFAULTS };
+
+  let state = { ...DEFAULTS, ...storedState };
+
+  // Migrate schedule from old format
+  if (state.schedule && !state.dataVersion) {
+    console.log('[WFM] Migrating schedule from v2.5 format to v2.6 multi-block format');
+    state.schedule = migrateSchedule(state.schedule);
+  }
+
+  // Ensure all schedule entries have blocks array
+  for (let i = 0; i < 7; i++) {
+    const key = String(i);
+    if (!state.schedule[key]) {
+      state.schedule[key] = { work: false, blocks: [] };
+    } else if (!state.schedule[key].blocks) {
+      // Single block old format still lingering
+      const old = state.schedule[key];
+      if (old.work && old.start && old.end) {
+        state.schedule[key] = { work: true, blocks: [{start: old.start, end: old.end}] };
+      } else {
+        state.schedule[key] = { work: false, blocks: [] };
+      }
+    }
+  }
+
+  // Ensure todayOverride exists
+  if (!state.todayOverride) state.todayOverride = null;
+
+  // Ensure dataVersion
+  state.dataVersion = "2.6";
+
+  return state;
+}
+
 // ===== STATE MANAGEMENT =====
 async function loadState() {
   try {
     const stored = await chrome.storage.local.get("wfmState");
-    let state = stored.wfmState ? { ...DEFAULTS, ...stored.wfmState } : { ...DEFAULTS };
+    let state = stored.wfmState ? migrateState(stored.wfmState) : { ...DEFAULTS };
     const today = getTodayKey();
 
     // Reset daily stats
@@ -93,8 +170,10 @@ async function loadState() {
       state.callStartWall = null; 
       state.callStartMono = null; 
       state.wfmStatus = "ready";
+      // NEW: Clear today override on new day
+      state.todayOverride = null;
       await saveState(state);
-      console.log('[WFM] New day detected, stats reset');
+      console.log('[WFM] New day detected, stats reset + today override cleared');
     }
 
     if (!state.schedule || typeof state.schedule !== 'object') {
@@ -106,7 +185,6 @@ async function loadState() {
     if (!state.history) {
       state.history = {};
     }
-    // Ensure currencyDisplay has a value
     if (!state.currencyDisplay) {
       state.currencyDisplay = "both";
     }
@@ -126,7 +204,7 @@ async function saveState(state) {
   }
 }
 
-// ===== HISTORY FUNCTIONS (NEW) =====
+// ===== HISTORY FUNCTIONS =====
 function saveDayToHistory(state, dateKey) {
   if (!state.history) state.history = {};
   const totalDur = state.calls.reduce((s, c) => s + c.duration, 0);
@@ -291,6 +369,10 @@ async function setStatus(status) {
 async function toggleOT() {
   const state = await loadState();
   state.otToday = !state.otToday;
+  // When toggling OT, also clear today override so OT takes full control
+  if (state.otToday) {
+    state.todayOverride = null;
+  }
   await saveState(state);
   await updateBadge(state);
   console.log('[WFM] OT toggled:', state.otToday);
@@ -322,6 +404,28 @@ async function resumeShift() {
   await saveState(state);
   await updateBadge(state);
   console.log('[WFM] Shift resumed (OT)');
+  return state;
+}
+
+// NEW: Set today's override schedule
+async function setTodayOverride(blocks) {
+  const state = await loadState();
+  state.todayOverride = { blocks: blocks };
+  // Disable OT when using custom schedule
+  state.otToday = false;
+  state.shiftEnded = false;
+  await saveState(state);
+  await updateBadge(state);
+  console.log('[WFM] Today override set:', blocks.length, 'blocks');
+  return state;
+}
+
+// NEW: Clear today's override
+async function clearTodayOverride() {
+  const state = await loadState();
+  state.todayOverride = null;
+  await saveState(state);
+  console.log('[WFM] Today override cleared');
   return state;
 }
 
@@ -379,6 +483,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           state = await resumeShift(); 
           sendResponse({ state }); 
           break;
+        // NEW: Today override messages
+        case "SET_TODAY_OVERRIDE":
+          state = await setTodayOverride(msg.blocks);
+          sendResponse({ state });
+          break;
+        case "CLEAR_TODAY_OVERRIDE":
+          state = await clearTodayOverride();
+          sendResponse({ state });
+          break;
         case "SAVE_CONFIG":
           state = await loadState();
           if (msg.schedule) state.schedule = msg.schedule;
@@ -401,7 +514,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           })];
           sendResponse({ csv: rows.map(r => r.join(",")).join("\n") });
           break;
-        // HISTORY API (NEW)
+        // HISTORY API
         case "GET_HISTORY":
           state = await loadState();
           const dayData = getDayHistory(state, msg.dateKey);
@@ -410,7 +523,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "ADD_CALL":
           state = await loadState();
           const added = addCallToHistory(state, msg.dateKey, msg.startTime, msg.endTime);
-          // If adding to today, also sync state.calls so main UI reflects it
           if (msg.dateKey === state.todayDate && added) {
             const lastCall = added.calls[added.calls.length - 1];
             state.calls.push(lastCall);
@@ -421,7 +533,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "DELETE_CALL":
           state = await loadState();
           const deleted = deleteCallFromHistory(state, msg.dateKey, msg.callIndex);
-          // If deleting from today, also sync state.calls so main UI reflects it
           if (msg.dateKey === state.todayDate && deleted) {
             state.calls.splice(msg.callIndex, 1);
           }
@@ -517,16 +628,64 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 });
 
-// ===== INSTALL =====
-chrome.runtime.onInstalled.addListener(async () => {
+// ===== DATA MIGRATION / PRESERVATION ON UPDATE =====
+chrome.runtime.onInstalled.addListener(async (details) => {
   try {
     await chrome.alarms.create("tick", { periodInMinutes: 0.5 });
-    await loadState();
-    console.log('[WFM] Extension installed/updated v2.5');
+
+    const stored = await chrome.storage.local.get("wfmState");
+
+    if (details.reason === "update") {
+      console.log('[WFM] Extension updated from', details.previousVersion, 'to', chrome.runtime.getManifest().version);
+
+      if (stored.wfmState) {
+        // Preserve existing data while migrating to new format
+        const mergedState = migrateState(stored.wfmState);
+
+        // Ensure history object exists
+        if (!mergedState.history) {
+          mergedState.history = {};
+        }
+        // Ensure currencyDisplay exists
+        if (!mergedState.currencyDisplay) {
+          mergedState.currencyDisplay = "both";
+        }
+        // Ensure today's calls are preserved
+        if (!mergedState.calls) {
+          mergedState.calls = [];
+        }
+        // Ensure todayOverride exists
+        if (!mergedState.todayOverride) {
+          mergedState.todayOverride = null;
+        }
+
+        await chrome.storage.local.set({ wfmState: mergedState });
+        console.log('[WFM] Data migrated successfully. History entries:', Object.keys(mergedState.history || {}).length);
+
+        // Show notification about update
+        chrome.notifications?.create?.({
+          type: 'basic',
+          iconUrl: 'icons/icon128.png',
+          title: 'WFM Call Timer Updated',
+          message: 'Multi-block schedules & calendar colors added. Your history is preserved.',
+          priority: 1
+        });
+      }
+    } else if (details.reason === "install") {
+      console.log('[WFM] Extension installed v2.6');
+      await loadState();
+    } else if (details.reason === "chrome_update") {
+      console.log('[WFM] Chrome updated, extension reloaded');
+      if (stored.wfmState) {
+        const mergedState = migrateState(stored.wfmState);
+        await chrome.storage.local.set({ wfmState: mergedState });
+      }
+    }
+
+    console.log('[WFM] Extension installed/updated v2.6');
   } catch (e) {
-    console.error('[WFM] Install error:', e);
+    console.error('[WFM] Install/update error:', e);
   }
 });
 
-console.log('[WFM] Background service worker loaded v2.5');
-
+console.log('[WFM] Background service worker loaded v2.6');
