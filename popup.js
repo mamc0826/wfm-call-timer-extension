@@ -386,11 +386,20 @@ function updateUI(state) {
 }
 
 // ===== ACTIONS =====
+var BLOCKED_MESSAGES = {
+  already_on_call: "You're already on a call.",
+  no_workshift: "Begin your workshift first.",
+  outside_schedule: "Outside your scheduled work window — check Today's Schedule (📝) or toggle OT."
+};
+
 async function doAction(type, extra) {
   var msg = {type: type};
   if (extra) Object.assign(msg, extra);
   try {
     var resp = await sendMsg(msg);
+    if (resp.blocked) {
+      showToast(BLOCKED_MESSAGES[resp.blocked] || 'Action was blocked.', 'error');
+    }
     if (resp.state) {
       updateUI(resp.state);
       return resp.state;
@@ -853,12 +862,12 @@ function addTodayBlockRow(start, end, index) {
     '<div class="today-block-time">' +
       '<div class="time-input-group">' +
         '<span class="time-label">Start</span>' +
-        '<input type="text" class="today-block-start" value="' + (start || "08:00") + '" maxlength="5" placeholder="HH:MM">' +
+        '<input type="text" class="today-block-start" value="' + (start || "00:00") + '" maxlength="5" placeholder="HH:MM">' +
       '</div>' +
       '<span class="time-separator">→</span>' +
       '<div class="time-input-group">' +
         '<span class="time-label">End</span>' +
-        '<input type="text" class="today-block-end" value="' + (end || "10:00") + '" maxlength="5" placeholder="HH:MM">' +
+        '<input type="text" class="today-block-end" value="' + (end || "23:59") + '" maxlength="5" placeholder="HH:MM">' +
       '</div>' +
     '</div>' +
     '<button class="today-block-remove" title="Remove block">×</button>';
@@ -1402,7 +1411,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var btnAddTodayBlock = document.getElementById("btnAddTodayBlock");
   if (btnAddTodayBlock) {
     btnAddTodayBlock.addEventListener('click', function() {
-      addTodayBlockRow("08:00", "10:00");
+      addTodayBlockRow("00:00", "23:59");
     });
   }
 
@@ -1489,5 +1498,4 @@ document.addEventListener('DOMContentLoaded', function() {
 
   console.log("[WFM] Popup ready");
 })();
-
 

@@ -30,7 +30,9 @@ const DEFAULTS = {
   // NEW: Today-only schedule override (cleared daily)
   todayOverride: null,  // Format: { blocks: [{start:"08:00", end:"10:00"}, ...] }
   // NEW: Version tracking for migrations
-  dataVersion: "2.6"
+  dataVersion: "2.6",
+  // NEW: debounce timestamp for the "call detected but blocked" notification
+  lastBlockedNotifyTs: null
 };
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -64,13 +66,18 @@ function isWithinBlocks(blocks) {
 }
 
 function isTodayActive(state) {
-  // Check today override first
+  // OT always wins: if you've flagged today as overtime, you're active
+  // no matter what a Today override's specific time block says. This is
+  // the guaranteed escape hatch so a narrow custom block can never
+  // silently trap an OT session.
+  if (state.otToday) return true;
+
+  // Check today override next
   if (state.todayOverride && state.todayOverride.blocks && state.todayOverride.blocks.length > 0) {
     return isWithinBlocks(state.todayOverride.blocks);
   }
   const entry = state.schedule[getDayKey()];
   if (!entry) return false;
-  if (state.otToday) return true;
   if (state.shiftEnded) return false;
   return entry.work && isWithinBlocks(entry.blocks);
 }
@@ -327,9 +334,14 @@ async function endWorkshift() {
 }
 
 // ===== ACTIONS =====
+// Returns { state, blocked } where blocked is null on success, or a short
+// reason code the popup can turn into a visible toast so a failed start
+// is never silent again.
 async function startCall() {
   const state = await loadState();
-  if (state.onCall || !isTodayActive(state)) return state;
+  if (state.onCall) return { state, blocked: "already_on_call" };
+  if (!state.workshiftActive) return { state, blocked: "no_workshift" };
+  if (!isTodayActive(state)) return { state, blocked: "outside_schedule" };
   state.onCall = true;
   state.callStartWall = Date.now();
   state.callStartMono = Date.now();
@@ -337,7 +349,7 @@ async function startCall() {
   await saveState(state);
   await updateBadge(state);
   console.log('[WFM] Call started');
-  return state;
+  return { state, blocked: null };
 }
 
 async function endCall() {
@@ -459,10 +471,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           state = await endWorkshift(); 
           sendResponse({ state }); 
           break;
-        case "START_CALL": 
-          state = await startCall(); 
-          sendResponse({ state }); 
+        case "START_CALL": {
+          const result = await startCall();
+          sendResponse({ state: result.state, blocked: result.blocked });
           break;
+        }
         case "END_CALL": 
           state = await endCall(); 
           sendResponse({ state }); 
@@ -558,7 +571,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "CONTENT_CALL_DETECTED":
           state = await loadState();
           if (state.workshiftActive && !state.onCall && isTodayActive(state) && state.wfmStatus === "ready") {
-            await startCall();
+            const result = await startCall();
+            state = result.state;
+          } else if (state.workshiftActive && !state.onCall) {
+            // A call was detected but something is blocking the timer from
+            // starting. Notify once every 5 minutes instead of failing silently.
+            const now = Date.now();
+            if (!state.lastBlockedNotifyTs || now - state.lastBlockedNotifyTs > 5 * 60 * 1000) {
+              state.lastBlockedNotifyTs = now;
+              await saveState(state);
+              const reason = !isTodayActive(state)
+                ? "Outside your scheduled work window — check Today's Schedule or toggle OT."
+                : `Status is "${state.wfmStatus}", so the timer isn't tracking this call.`;
+              chrome.notifications?.create?.({
+                type: 'basic',
+                iconUrl: 'icons/icon128.png',
+                title: 'WFM Call Timer: call not being tracked',
+                message: reason,
+                priority: 2
+              });
+            }
           }
           sendResponse({ ok: true, workshiftActive: state.workshiftActive });
           break;
@@ -617,7 +649,22 @@ chrome.commands.onCommand.addListener(async (command) => {
       case "toggle-call": { 
         const s = await loadState(); 
         if (s.onCall) await endCall(); 
-        else await startCall(); 
+        else {
+          const result = await startCall();
+          if (result.blocked) {
+            chrome.notifications?.create?.({
+              type: 'basic',
+              iconUrl: 'icons/icon128.png',
+              title: 'WFM Call Timer',
+              message: result.blocked === "outside_schedule"
+                ? "Outside your scheduled work window — check Today's Schedule or toggle OT."
+                : result.blocked === "no_workshift"
+                ? "Begin your workshift first."
+                : "Already on a call.",
+              priority: 1
+            });
+          }
+        }
         break; 
       }
       case "set-not-ready": await setStatus("not_ready"); break;
@@ -688,4 +735,3 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   }
 });
 
-console.log('[WFM] Background service worker loaded v2.6');

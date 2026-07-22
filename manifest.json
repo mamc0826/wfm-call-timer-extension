@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "WFM Call Timer",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "description": "Track call time and earnings for LSA InterpreCloud with multi-block schedules",
-  "permissions": ["storage", "activeTab", "alarms"],
+  "permissions": ["storage", "activeTab", "alarms", "notifications"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
